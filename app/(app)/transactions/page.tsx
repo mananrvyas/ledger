@@ -9,6 +9,7 @@ import {
 import { CategoryPill, type CategoryMeta } from "@/components/app/category-pill";
 import { CategoryPicker } from "@/components/app/category-picker";
 import { RecategorizeAllButton } from "@/components/app/recategorize-all-button";
+import { SourceTag } from "@/components/app/source-tag";
 import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -200,8 +201,8 @@ export default async function TransactionsPage() {
                     ) : null}
                   </div>
 
-                  {/* Category — inline editable */}
-                  <div className="min-w-0">
+                  {/* Category — inline editable, with source tag */}
+                  <div className="flex min-w-0 items-center gap-2">
                     {t.is_transfer ? (
                       <CategoryPill category={category} size="md" />
                     ) : (
@@ -211,6 +212,7 @@ export default async function TransactionsPage() {
                         options={categoryList}
                       />
                     )}
+                    <SourceTag source={t.category_source} />
                   </div>
 
                   {/* Account */}
@@ -253,6 +255,10 @@ export default async function TransactionsPage() {
       )}
 
       <p className="reveal reveal-3 text-center font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground/40">
+        <span className="text-emerald-300/80">P</span>laid ·{" "}
+        <span className="text-sky-300/80">R</span>ule ·{" "}
+        <span className="text-primary/80">AI</span> · <span>M</span>anual
+        <span className="mx-3 text-muted-foreground/30">|</span>
         click a category to recategorize · the rule sticks for that merchant
       </p>
     </div>

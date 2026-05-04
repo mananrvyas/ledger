@@ -54,6 +54,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
   - `/transactions` page: 5-col grid with inline category picker, pending / transfer / refund / split indicators, dimmed row when excluded.
   - shadcn primitives added: popover, command, dialog, textarea, input-group.
   - **Recategorize button** on `/transactions` (`components/app/recategorize-all-button.tsx`): plain click runs missing-only backfill; Shift-click force-recategorizes everything (with confirm).
+  - **Source tag** (`components/app/source-tag.tsx`) inline next to each category pill on `/transactions`: P (plaid, emerald) · R (rule, sky) · AI (primary amber) · M (manual). Tooltip on hover names the source. Legend in the footer of the page.
 
 ---
 
@@ -104,6 +105,14 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 - 2026-05-03 — **Plaid webhook signature verification deferred.** Plaid signs webhooks via JWT keyed against a JWKS endpoint. Implementing this end-to-end is non-trivial and the blast radius is currently bounded — the webhook only enqueues idempotent sync jobs against an existing `item_id`. Wire signature verification before we have any side-effect-bearing operations (Phase 3 onward).
 - 2026-05-03 — **Vercel canonical URL pinned**: `https://finance-planning-nu.vercel.app` (Vercel auto-assigned this short alias since `finance-planning.vercel.app` was taken). Cron-job.org and Plaid webhook config use this stable URL; QStash callback URLs fall back to `VERCEL_URL` when `NEXT_PUBLIC_APP_URL`/`APP_URL` aren't set. The long `*-redacted-team.vercel.app` form also works but is uglier; the per-deployment `*-{hash}-...` URLs change every push and must NOT be used in env vars or external configs.
 - 2026-05-03 — **Plaid env: temporarily on Sandbox.** All five OAuth institutions (Amex, Chase, Discover, Robinhood, PayPal) hit the "registration in review" gate on Production. Sandbox lets us exercise the full pipeline (encryption, webhooks, sync, UI) against synthetic First Platypus Bank / Houndstooth Bank data while we wait. Test creds: `user_good` / `pass_good`, MFA `1234`. Flip back to `PLAID_ENV=production` + production secret once OAuth registrations clear at https://dashboard.plaid.com/activity/status/oauth-institutions.
+
+---
+
+## One-off DB cleanups applied (audit log)
+
+- 2026-05-03 — **Backfilled `plaid_category` / `plaid_category_detail` / `plaid_confidence`** on existing rows from `transactions.raw->'personal_finance_category'`. Pre-fix: 0 rows had these columns populated because they were synced before migration 0004; the Plaid PFC was sitting unused inside `raw` jsonb. Post-fix: 27 of 54 rows (~50%) now have HIGH/VERY_HIGH Plaid confidence ready for the Plaid tier of the waterfall. **No Plaid contributions seen until after this fix.**
+- 2026-05-03 — **Deleted bad rule** `category_rules` row `united airlines → Eating Out`. User mistakenly trained it during a smoke test. Plaid PFC for United Airlines is `TRAVEL_FLIGHTS` at VERY_HIGH confidence, so re-running the waterfall categorizes it correctly as Travel.
+- 2026-05-03 — **Reset categorization on all non-manual rows** (`user_category` + `category_source` + `ai_*` set to NULL). Manual edits preserved. Recategorize button (or `/api/admin/backfill-categorize`) re-fills via the now-fixed waterfall.
 
 ---
 
