@@ -249,7 +249,9 @@ export default async function DashboardPage() {
           footnote={
             lastMonthSameWindowTotal > 0
               ? `${formatCurrency(lastMonthSameWindowTotal)} thru day ${dayOfMonth} last month · ${formatCurrency(lastMonthFullTotal)} full month`
-              : "no spending last month"
+              : lastMonthFullTotal > 0
+                ? `no spending in last month's first ${dayOfMonth} day${dayOfMonth === 1 ? "" : "s"} · ${formatCurrency(lastMonthFullTotal)} full month`
+                : "no spending last month"
           }
         />
         <StatCard

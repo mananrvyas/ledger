@@ -51,6 +51,32 @@ export async function sendWaNotificationHandler(payload: {
   if (tx.deleted_at) return { ok: true, skipped: true, reason: "deleted" };
   if (tx.is_transfer) return { ok: true, skipped: true, reason: "is_transfer" };
 
+  // Lone-transfer guard: Plaid PFC classifies things like "CD DEPOSIT", "CREDIT
+  // CARD PAYMENT", "AUTOMATIC PAYMENT" as Transfer. The transfer-pair worker
+  // only flips `is_transfer` when it finds an opposite-sign match on another
+  // user-owned account — which often doesn't exist for these (the other side
+  // is at an external bank, or hasn't synced yet). Skip notifying for the
+  // category-but-not-paired case anyway.
+  if (tx.user_category === "Transfer") {
+    return { ok: true, skipped: true, reason: "category_transfer" };
+  }
+
+  // Backfill silence: when a brand-new Plaid item is linked, the initial
+  // historical sync runs categorize → send_wa_notification for every tx in
+  // the 24-month window, which would fire dozens of WA messages for charges
+  // from months ago. Skip anything older than 2 days for the 'new' variant.
+  // Real-time webhook-driven tx are always date=today (or today−1 if posted
+  // overnight), so this only catches backfill. The 're-notify' variant is
+  // unaffected since pending→posted transitions happen within hours.
+  if (payload.variant === "new") {
+    const ageDays =
+      (Date.now() - new Date(tx.date + "T00:00:00").getTime()) /
+      (24 * 3600 * 1000);
+    if (ageDays > 2) {
+      return { ok: true, skipped: true, reason: `too_old_${Math.round(ageDays)}d` };
+    }
+  }
+
   // For 'new' variant, skip if we already notified for this row.
   if (payload.variant === "new" && tx.last_notified_at) {
     return { ok: true, skipped: true, reason: "already_notified" };
