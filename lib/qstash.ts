@@ -64,13 +64,23 @@ function getReceiver(): Receiver {
  * Publish a job to QStash. The worker URL is derived from APP_URL +
  * /api/qstash/job/{type}. QStash retries failed (non-2xx) responses with
  * exponential backoff up to `retries` (default 3).
+ *
+ * Dev fallback: when APP_URL points at localhost (or is empty), QStash
+ * can't reach the machine, so the job is run inline in-process. Retries
+ * and delay are ignored in this path. Errors propagate up immediately.
  */
 export async function publishJob<T extends Record<string, unknown>>(
   job: JobBody<T>,
   options: { retries?: number; delaySeconds?: number } = {},
 ): Promise<{ messageId: string }> {
+  const appUrl = getAppUrl();
+  if (isLocalUrl(appUrl)) {
+    await runJobInline(job);
+    return { messageId: `inline-${job.type}-${Date.now()}` };
+  }
+
   const c = getClient();
-  const url = `${getAppUrl()}/api/qstash/job/${job.type}`;
+  const url = `${appUrl}/api/qstash/job/${job.type}`;
 
   const result = await c.publishJSON({
     url,
@@ -80,6 +90,60 @@ export async function publishJob<T extends Record<string, unknown>>(
   });
 
   return { messageId: result.messageId };
+}
+
+function isLocalUrl(url: string): boolean {
+  if (!url) return true;
+  try {
+    const u = new URL(url);
+    return (
+      u.hostname === "localhost" ||
+      u.hostname === "127.0.0.1" ||
+      u.hostname === "::1" ||
+      u.hostname.endsWith(".local")
+    );
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Inline dispatcher used in dev. Mirrors the production switch in
+ * /api/qstash/job/[type]/route.ts. Lazy imports avoid circular deps —
+ * handlers import publishJob themselves.
+ */
+async function runJobInline<T extends Record<string, unknown>>(
+  job: JobBody<T>,
+): Promise<void> {
+  const payload = job.payload as unknown;
+  switch (job.type) {
+    case "sync_plaid_item": {
+      const m = await import("@/handlers/sync_plaid_item");
+      await m.syncPlaidItem(payload as { plaid_item_id: string });
+      return;
+    }
+    case "categorize_transaction": {
+      const m = await import("@/handlers/categorize_transaction");
+      await m.categorizeTransactionHandler(
+        payload as { transaction_id: string; force?: boolean },
+      );
+      return;
+    }
+    case "pair_refund": {
+      const m = await import("@/handlers/pair_refund");
+      await m.pairRefundHandler(payload as { transaction_id: string });
+      return;
+    }
+    case "send_wa_notification": {
+      const m = await import("@/handlers/send_wa_notification");
+      await m.sendWaNotificationHandler(
+        payload as { transaction_id: string; variant: "new" | "re-notify" },
+      );
+      return;
+    }
+    default:
+      throw new Error(`Inline dispatch: unknown job type ${job.type}`);
+  }
 }
 
 /**
