@@ -26,7 +26,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
   - `.env.local` populated for known secrets; placeholders for `SUPABASE_SERVICE_ROLE_KEY` and `USER_WHATSAPP_TO`
   - Vercel project linked: `redacted-team/finance-planning`, GitHub auto-connected
   - Production env vars uploaded to Vercel (16 vars, all 3 environments)
-  - First production deploy: <https://finance-planning-9fk8vrdvq-redacted-team.vercel.app>
+  - First production deploy (per-build URL): `finance-planning-9fk8vrdvq-...vercel.app`. Stable production alias is <https://finance-planning-nu.vercel.app>
   - GitHub repo: <https://github.com/mananrvyas/finance-planning> (private)
   - **Sentry** wired (`@sentry/nextjs` SDK, server/edge/client configs, instrumentation, `/sentry-example-page` for capture testing). `sendDefaultPii: false` set everywhere to honor the no-financial-data-in-logs policy.
   - `SUPABASE_SERVICE_ROLE_KEY`, `SENTRY_DSN`, `SENTRY_AUTH_TOKEN` filled in `.env.local` and pushed to Vercel for prod/preview/dev.
@@ -39,7 +39,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
   - Worker: `handlers/sync_plaid_item.ts` — cursor-based `transactionsSync`, idempotent upsert/update/soft-delete, audit row in `app_events`.
   - Components: `components/plaid/plaid-link-button.tsx` (with reconnect mode).
   - Pages: `/accounts` (institutions + balances), `/transactions` (raw list with pending pill + credit highlight).
-  - Vercel `NEXT_PUBLIC_APP_URL` / `APP_URL` updated to canonical production URL `https://finance-planning-redacted-team.vercel.app`.
+  - Vercel `NEXT_PUBLIC_APP_URL` / `APP_URL` updated to canonical production URL `https://finance-planning-nu.vercel.app`.
 
 ---
 
@@ -53,14 +53,14 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 **Phase 1 wrap-up — three external configurations + a smoke test.**
 
-Production URL: <https://finance-planning-redacted-team.vercel.app>
+Production URL: <https://finance-planning-nu.vercel.app>
 
 1. **Plaid Dashboard** → Team Settings → API → Allowed redirect URIs / Webhooks. Set the production webhook URL:
    ```
-   https://finance-planning-redacted-team.vercel.app/api/plaid/webhook
+   https://finance-planning-nu.vercel.app/api/plaid/webhook
    ```
 2. **cron-job.org** — create a job:
-   - URL: `https://finance-planning-redacted-team.vercel.app/api/cron/sync-fallback`
+   - URL: `https://finance-planning-nu.vercel.app/api/cron/sync-fallback`
    - Method: GET
    - Schedule: every 60 minutes
    - Header: `Authorization: Bearer <CRON_SECRET>` (the value in `.env.local`)
@@ -98,7 +98,7 @@ If any step fails, check Vercel function logs and Supabase logs.
 - 2026-05-03 — **Next.js 16 deprecates `middleware.ts` → `proxy.ts`.** Renamed the file and the exported function (`middleware` → `proxy`). All Supabase-SSR session-refresh logic stayed identical.
 - 2026-05-03 — **Sentry: `sendDefaultPii: false`** everywhere. Wizard defaults this to true; we override to enforce the no-financial-data-in-logs policy (docs/01-architecture.md §Logging hygiene).
 - 2026-05-03 — **Plaid webhook signature verification deferred.** Plaid signs webhooks via JWT keyed against a JWKS endpoint. Implementing this end-to-end is non-trivial and the blast radius is currently bounded — the webhook only enqueues idempotent sync jobs against an existing `item_id`. Wire signature verification before we have any side-effect-bearing operations (Phase 3 onward).
-- 2026-05-03 — **Vercel canonical URL pinned**: `https://finance-planning-redacted-team.vercel.app`. Cron-job.org and Plaid webhook config use this stable URL; QStash callback URLs fall back to `VERCEL_URL` when `NEXT_PUBLIC_APP_URL`/`APP_URL` aren't set.
+- 2026-05-03 — **Vercel canonical URL pinned**: `https://finance-planning-nu.vercel.app` (Vercel auto-assigned this short alias since `finance-planning.vercel.app` was taken). Cron-job.org and Plaid webhook config use this stable URL; QStash callback URLs fall back to `VERCEL_URL` when `NEXT_PUBLIC_APP_URL`/`APP_URL` aren't set. The long `*-redacted-team.vercel.app` form also works but is uglier; the per-deployment `*-{hash}-...` URLs change every push and must NOT be used in env vars or external configs.
 
 ---
 
