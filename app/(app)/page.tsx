@@ -4,6 +4,7 @@ import { createClient } from "@/lib/supabase/server";
 import { formatCurrency, formatShortDate } from "@/lib/format";
 import { CategoryPill, type CategoryMeta } from "@/components/app/category-pill";
 import { StatCard } from "@/components/app/dashboard/stat-card";
+import { RefreshOnMount } from "@/components/app/dashboard/refresh-on-mount";
 import {
   SpendingDonut,
   type SpendingDonutDatum,
@@ -26,14 +27,14 @@ export default async function DashboardPage() {
   const supabase = await createClient();
 
   // ---------------------------------------------------------------------
-  // Empty-state gate: if no accounts, skip all the chart fetches.
+  // Empty-state gate: load accounts (we need them for live net worth too).
   // ---------------------------------------------------------------------
-  const { count: accountCount } = await supabase
+  const { data: accountsRows } = await supabase
     .from("accounts")
-    .select("id", { count: "exact", head: true })
+    .select("id, type, current_balance, is_archived")
     .eq("is_archived", false);
 
-  if (!accountCount) {
+  if (!accountsRows || accountsRows.length === 0) {
     return <EmptyDashboard />;
   }
 
@@ -45,6 +46,20 @@ export default async function DashboardPage() {
   const startOfLastMonth = isoDay(
     new Date(now.getFullYear(), now.getMonth() - 1, 1),
   );
+  // Same day of LAST month, for an apples-to-apples month-to-date comparison.
+  // Today is May 4 → lastMonthSameDay = April 4. We sum April 1–4 vs May 1–4.
+  // Clamp to month-end if last month was shorter (e.g. today is Mar 31, last
+  // month-same-day = Feb 28).
+  const dayOfMonth = now.getDate();
+  const lastMonthSameDay = (() => {
+    const d = new Date(now.getFullYear(), now.getMonth() - 1, dayOfMonth);
+    // If the new Date overflowed (e.g. Feb 30 → Mar 2), clamp to last day of
+    // the previous month.
+    if (d.getMonth() !== (now.getMonth() - 1 + 12) % 12) {
+      return isoDay(new Date(now.getFullYear(), now.getMonth(), 0));
+    }
+    return isoDay(d);
+  })();
   const today = isoDay(now);
   const thirtyDaysAgo = isoDay(new Date(now.getTime() - 30 * 24 * 3600_000));
   const ninetyDaysAgo = isoDay(
@@ -99,17 +114,29 @@ export default async function DashboardPage() {
   const thisMonthRows = (spendingRows ?? []).filter(
     (r) => r.date != null && r.date >= startOfMonth,
   );
-  const lastMonthRows = (spendingRows ?? []).filter(
+  // Same window of last month (Apr 1 → Apr <today's day-of-month>) for an
+  // apples-to-apples comparison. The full last month total is also computed
+  // for the footnote.
+  const lastMonthSameWindowRows = (spendingRows ?? []).filter(
+    (r) =>
+      r.date != null &&
+      r.date >= startOfLastMonth &&
+      r.date <= lastMonthSameDay,
+  );
+  const lastMonthFullRows = (spendingRows ?? []).filter(
     (r) =>
       r.date != null && r.date >= startOfLastMonth && r.date < startOfMonth,
   );
 
   const thisMonthTotal = sumAmount(thisMonthRows);
-  const lastMonthTotal = sumAmount(lastMonthRows);
+  const lastMonthSameWindowTotal = sumAmount(lastMonthSameWindowRows);
+  const lastMonthFullTotal = sumAmount(lastMonthFullRows);
 
   const spendingDelta =
-    lastMonthTotal > 0
-      ? ((thisMonthTotal - lastMonthTotal) / lastMonthTotal) * 100
+    lastMonthSameWindowTotal > 0
+      ? ((thisMonthTotal - lastMonthSameWindowTotal) /
+          lastMonthSameWindowTotal) *
+        100
       : null;
 
   // Category mix (this month). Sort largest → smallest, cap at 8 + "Other".
@@ -137,25 +164,42 @@ export default async function DashboardPage() {
     (d) => ({ date: d, amount: byDate.get(d) ?? 0 }),
   );
 
-  // Net worth: latest + 30d ago for delta. Series for chart.
-  const netWorthSeries: NetWorthLineDatum[] = (netWorthRows ?? [])
+  // Net worth: live value computed from accounts.current_balance (refreshed
+  // by every Plaid sync — see handlers/sync_plaid_item.ts). The chart's
+  // historical line still comes from v_net_worth_daily snapshots; the latest
+  // point is overlaid with the live value so the chart and the card agree.
+  const liveNetWorth = accountsRows.reduce((acc, a) => {
+    const balance = a.current_balance ?? 0;
+    if (a.type === "depository" || a.type === "investment") return acc + balance;
+    if (a.type === "credit" || a.type === "loan") return acc - balance;
+    return acc;
+  }, 0);
+
+  const snapshotSeries = (netWorthRows ?? [])
     .filter((r) => r.date != null && r.net_worth != null)
     .map((r) => ({ date: r.date as string, net_worth: Number(r.net_worth) }));
-  const latestNetWorth = netWorthSeries.at(-1)?.net_worth ?? null;
-  const netWorth30d = netWorthSeries
+  // Replace today's snapshot point with the live total (fresher), or append
+  // it if no snapshot exists for today yet.
+  const netWorthSeries: NetWorthLineDatum[] = (() => {
+    const out = snapshotSeries.filter((r) => r.date !== today);
+    out.push({ date: today, net_worth: liveNetWorth });
+    return out;
+  })();
+  const latestNetWorth = liveNetWorth;
+  const netWorth30d = snapshotSeries
     .slice()
     .reverse()
     .find((r) => r.date <= thirtyDaysAgo)?.net_worth;
   const netWorthDelta =
-    latestNetWorth != null && netWorth30d != null
-      ? latestNetWorth - netWorth30d
-      : null;
+    netWorth30d != null ? latestNetWorth - netWorth30d : null;
 
   // ---------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------
   return (
     <div className="space-y-12">
+      <RefreshOnMount />
+
       <header className="reveal reveal-1 space-y-4">
         <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground/80">
           Overview
@@ -182,7 +226,7 @@ export default async function DashboardPage() {
           delta={
             spendingDelta != null
               ? {
-                  label: `${spendingDelta >= 0 ? "+" : ""}${spendingDelta.toFixed(0)}% vs last`,
+                  label: `${spendingDelta >= 0 ? "+" : ""}${spendingDelta.toFixed(0)}% vs same window`,
                   direction:
                     spendingDelta > 0.5
                       ? "up"
@@ -202,7 +246,11 @@ export default async function DashboardPage() {
                   ? "good"
                   : "neutral"
           }
-          footnote={`${lastMonthTotal > 0 ? formatCurrency(lastMonthTotal) + " last month" : "no spending last month"}`}
+          footnote={
+            lastMonthSameWindowTotal > 0
+              ? `${formatCurrency(lastMonthSameWindowTotal)} thru day ${dayOfMonth} last month · ${formatCurrency(lastMonthFullTotal)} full month`
+              : "no spending last month"
+          }
         />
         <StatCard
           kicker="Net worth"
@@ -227,9 +275,9 @@ export default async function DashboardPage() {
                 : "bad"
           }
           footnote={
-            netWorthSeries.length > 0
-              ? `${netWorthSeries.length} day${netWorthSeries.length > 1 ? "s" : ""} of snapshots · 30d delta`
-              : "snapshots build up daily"
+            netWorth30d != null
+              ? "live · vs snapshot 30 days ago"
+              : `live · ${snapshotSeries.length} snapshot${snapshotSeries.length === 1 ? "" : "s"} on file`
           }
         />
       </section>

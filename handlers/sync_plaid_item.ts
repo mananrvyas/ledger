@@ -2,6 +2,7 @@ import "server-only";
 import type {
   Transaction as PlaidTransaction,
   RemovedTransaction,
+  AccountBase,
 } from "plaid";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Json } from "@/lib/database.types";
@@ -13,6 +14,7 @@ export type SyncResult = {
   added: number;
   modified: number;
   removed: number;
+  balances_updated?: number;
   skipped?: boolean;
   reason?: string;
 };
@@ -64,6 +66,7 @@ export async function syncPlaidItem(payload: {
   let added: PlaidTransaction[] = [];
   let modified: PlaidTransaction[] = [];
   let removed: RemovedTransaction[] = [];
+  let latestAccounts: AccountBase[] = [];
   let hasMore = true;
   let iterations = 0;
   const MAX_ITERATIONS = 50; // safety: ~50 * 500 = 25K txns
@@ -77,6 +80,12 @@ export async function syncPlaidItem(payload: {
     added = added.concat(resp.data.added);
     modified = modified.concat(resp.data.modified);
     removed = removed.concat(resp.data.removed);
+    // Plaid returns the live (cached) accounts array on every page; the last
+    // page wins. We use this to refresh accounts.current_balance + write a
+    // daily balance_snapshots row — for free, since transactionsSync calls are
+    // bundled in the Transactions subscription. Replaces a metered
+    // `accountsBalanceGet` call.
+    latestAccounts = resp.data.accounts ?? latestAccounts;
     hasMore = resp.data.has_more;
     cursor = resp.data.next_cursor;
   }
@@ -194,7 +203,40 @@ export async function syncPlaidItem(payload: {
       .eq("plaid_transaction_id", r.transaction_id);
   }
 
-  // 9. Persist new cursor + last_synced_at.
+  // 9. Refresh accounts.current_balance + upsert today's balance_snapshots
+  //    using the balances Plaid returned in the sync response. No extra Plaid
+  //    API call needed — these came in the response we already paid for.
+  const today = new Date().toISOString().slice(0, 10);
+  let balancesUpdated = 0;
+  for (const a of latestAccounts) {
+    const accountUuid = accountMap.get(a.account_id);
+    if (!accountUuid) continue;
+
+    const current = a.balances.current ?? null;
+    const available = a.balances.available ?? null;
+
+    await admin
+      .from("accounts")
+      .update({
+        current_balance: current,
+        available_balance: available,
+      })
+      .eq("id", accountUuid);
+
+    await admin.from("balance_snapshots").upsert(
+      {
+        account_id: accountUuid,
+        user_id: item.user_id,
+        date: today,
+        current_balance: current,
+        available_balance: available,
+      },
+      { onConflict: "account_id,date" },
+    );
+    balancesUpdated += 1;
+  }
+
+  // 10. Persist new cursor + last_synced_at.
   await admin
     .from("plaid_items")
     .update({
@@ -206,7 +248,7 @@ export async function syncPlaidItem(payload: {
     })
     .eq("id", item.id);
 
-  // 10. Enqueue categorize_transaction for each newly inserted row. Best
+  // 11. Enqueue categorize_transaction for each newly inserted row. Best
   //     effort — if QStash is down we silently skip; the backfill route or
   //     fallback cron can catch up later. Don't throw inside the loop.
   for (const id of insertedRowIds) {
@@ -226,7 +268,7 @@ export async function syncPlaidItem(payload: {
     }
   }
 
-  // 11. Enqueue re-notify for any transactions that just transitioned from
+  // 12. Enqueue re-notify for any transactions that just transitioned from
   //     pending → posted with a material amount change. Idempotency key
   //     includes a timestamp bucket so subsequent material updates can fire
   //     again, but the same sync replay won't.
@@ -251,5 +293,6 @@ export async function syncPlaidItem(payload: {
     added: added.length,
     modified: modified.length,
     removed: removed.length,
+    balances_updated: balancesUpdated,
   };
 }
