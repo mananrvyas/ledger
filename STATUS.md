@@ -9,7 +9,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Current phase
 
-**Phase 0 — Scaffold** ✅ done. Ready for Phase 1 (Plaid plumbing).
+**Phase 1 — Plaid plumbing** — code complete; pending external config (Plaid webhook URL, cron-job.org) + first bank linking.
 
 ---
 
@@ -30,6 +30,16 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
   - GitHub repo: <https://github.com/mananrvyas/finance-planning> (private)
   - **Sentry** wired (`@sentry/nextjs` SDK, server/edge/client configs, instrumentation, `/sentry-example-page` for capture testing). `sendDefaultPii: false` set everywhere to honor the no-financial-data-in-logs policy.
   - `SUPABASE_SERVICE_ROLE_KEY`, `SENTRY_DSN`, `SENTRY_AUTH_TOKEN` filled in `.env.local` and pushed to Vercel for prod/preview/dev.
+- 2026-05-03 — **Design system** (Quiet Ledger): warm-dark editorial. Fraunces (display) + Geist Sans + Geist Mono. Single amber accent. Atmospheric backdrop on auth, tabular-nums + ledger ruling on dashboard. Reusable Brand component.
+- 2026-05-03 — **Phase 1 (code complete)**:
+  - Schema migrations 0001-0003 applied via Supabase MCP: pg_trgm, core tables (`plaid_items`, `accounts`, `transactions`, `plaid_webhooks`, `app_events`) with RLS, encryption helpers (`store_plaid_item` / `get_plaid_access_token`).
+  - TypeScript types generated to `lib/database.types.ts`. SSR + browser Supabase clients now typed; `lib/supabase/admin.ts` is the service-role escape hatch.
+  - Libraries: `lib/plaid.ts` (Plaid SDK factory), `lib/encryption.ts` (RPC wrappers), `lib/qstash.ts` (publish + verify), `lib/format.ts` (currency / date helpers).
+  - API routes: `/api/plaid/link/{create-token,exchange}`, `/api/plaid/webhook`, `/api/qstash/job/[type]`, `/api/cron/sync-fallback`.
+  - Worker: `handlers/sync_plaid_item.ts` — cursor-based `transactionsSync`, idempotent upsert/update/soft-delete, audit row in `app_events`.
+  - Components: `components/plaid/plaid-link-button.tsx` (with reconnect mode).
+  - Pages: `/accounts` (institutions + balances), `/transactions` (raw list with pending pill + credit highlight).
+  - Vercel `NEXT_PUBLIC_APP_URL` / `APP_URL` updated to canonical production URL `https://finance-planning-redacted-team.vercel.app`.
 
 ---
 
@@ -41,13 +51,28 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Up next
 
-**Phase 1 — Plaid plumbing.** First task: 1.2 — apply migration `0001_extensions_and_helpers.sql` via Supabase MCP (`pgcrypto`, `pg_trgm`, `uuid-ossp` + `store_plaid_item` and `get_plaid_access_token` helper functions).
+**Phase 1 wrap-up — three external configurations + a smoke test.**
 
-See [docs/07-build-plan.md §Phase 1](docs/07-build-plan.md) for the full task list.
+Production URL: <https://finance-planning-redacted-team.vercel.app>
 
-**Optional smoke tests before moving on (recommended):**
-- Sign up + sign in on the deployed URL (or `npm run dev` locally) to confirm auth round-trips.
-- Hit `/sentry-example-page` (after signing in) → click the "throw" button → confirm an error shows up in Sentry's Issues view.
+1. **Plaid Dashboard** → Team Settings → API → Allowed redirect URIs / Webhooks. Set the production webhook URL:
+   ```
+   https://finance-planning-redacted-team.vercel.app/api/plaid/webhook
+   ```
+2. **cron-job.org** — create a job:
+   - URL: `https://finance-planning-redacted-team.vercel.app/api/cron/sync-fallback`
+   - Method: GET
+   - Schedule: every 60 minutes
+   - Header: `Authorization: Bearer <CRON_SECRET>` (the value in `.env.local`)
+3. **Try it**: log in to the deployed app → /accounts → "Connect a bank" → connect Amex (or any). Verify:
+   - The `plaid_items` table has a row with an encrypted `access_token_enc` (bytea, not plaintext).
+   - The `accounts` table has rows.
+   - Within ~30s, the `transactions` table starts populating.
+   - `app_events` has a `plaid_sync_response` row with the counts.
+
+If any step fails, check Vercel function logs and Supabase logs.
+
+**Then Phase 2 — Categorization** (default categories, waterfall, transfer/refund pairing).
 
 ---
 
@@ -72,6 +97,8 @@ See [docs/07-build-plan.md §Phase 1](docs/07-build-plan.md) for the full task l
 - 2026-05-03 — **Transfer pairing is synchronous** at the end of `categorize_transaction` to avoid the WA-notification race. `pair_refund` stays async.
 - 2026-05-03 — **Next.js 16 deprecates `middleware.ts` → `proxy.ts`.** Renamed the file and the exported function (`middleware` → `proxy`). All Supabase-SSR session-refresh logic stayed identical.
 - 2026-05-03 — **Sentry: `sendDefaultPii: false`** everywhere. Wizard defaults this to true; we override to enforce the no-financial-data-in-logs policy (docs/01-architecture.md §Logging hygiene).
+- 2026-05-03 — **Plaid webhook signature verification deferred.** Plaid signs webhooks via JWT keyed against a JWKS endpoint. Implementing this end-to-end is non-trivial and the blast radius is currently bounded — the webhook only enqueues idempotent sync jobs against an existing `item_id`. Wire signature verification before we have any side-effect-bearing operations (Phase 3 onward).
+- 2026-05-03 — **Vercel canonical URL pinned**: `https://finance-planning-redacted-team.vercel.app`. Cron-job.org and Plaid webhook config use this stable URL; QStash callback URLs fall back to `VERCEL_URL` when `NEXT_PUBLIC_APP_URL`/`APP_URL` aren't set.
 
 ---
 
