@@ -5,6 +5,7 @@ import { categorizeTransactionHandler } from "@/handlers/categorize_transaction"
 import { pairRefundHandler } from "@/handlers/pair_refund";
 import { sendWaNotificationHandler } from "@/handlers/send_wa_notification";
 import { parseWaReplyHandler } from "@/handlers/parse_wa_reply";
+import { snapshotBalancesHandler } from "@/handlers/snapshot_balances";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // seconds — sync can be slow on first run
@@ -78,6 +79,12 @@ export async function POST(
       case "parse_wa_reply": {
         const result = await parseWaReplyHandler(
           parsed.payload as { whatsapp_message_id: string },
+        );
+        return Response.json({ ok: true, type, result });
+      }
+      case "snapshot_balances": {
+        const result = await snapshotBalancesHandler(
+          parsed.payload as { plaid_item_id: string },
         );
         return Response.json({ ok: true, type, result });
       }

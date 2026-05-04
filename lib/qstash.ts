@@ -148,6 +148,13 @@ async function runJobInline<T extends Record<string, unknown>>(
       );
       return;
     }
+    case "snapshot_balances": {
+      const m = await import("@/handlers/snapshot_balances");
+      await m.snapshotBalancesHandler(
+        payload as { plaid_item_id: string },
+      );
+      return;
+    }
     default:
       throw new Error(`Inline dispatch: unknown job type ${job.type}`);
   }

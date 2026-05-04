@@ -9,7 +9,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Current phase
 
-**Phase 4 — WhatsApp inbound** — live + verified end-to-end. Twilio sandbox webhook is pointed at the production endpoint. All 5 intents, multi-action replies, photo attachments, latest-notified fallback all verified against the real United Airlines $500 sandbox tx. Up next: Phase 5 (stats & charts) or Phase 1 wrap-up (Plaid webhook URL + cron-job.org).
+**Phase 5 — Stats & charts** — code complete + deployed. Dashboard now renders top-row stat cards (Spent this month + Net worth with deltas), spending donut by category (this month), spending bars over time (daily, this month), net-worth area chart (last 90 days), and recent activity. Realtime listener pings server-component refreshes on every `transactions`/`accounts` mutation. Awaiting one cron-job.org config (daily 03:00 → `/api/cron/snapshot-balances`) for the net-worth series to grow past the seed snapshot.
 
 ---
 
@@ -83,6 +83,17 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
   - **Multi-action replies.** `lib/intent.ts` schema is now a single `Action` object with optional `recategorize`/`split`/`note`/`exclude_set`/`unclear` fields, instead of a discriminated single-intent union. Prompt explicitly allows combinations: "categorize as travel and split half" applies BOTH in one DB update + stitched confirmation. `whatsapp_messages.intent` is now a compound label like `recategorize+split`, with the structured `Action` in `parsed_payload.action`.
   - **Latest-notified matching.** No-quote replies now resolve to the SINGLE most-recent outbound `tx_notification`'s `related_transaction_id` within 60 min. Dropped the "exactly one candidate" + "last_user_edit_at IS NULL" gates that were making "🤔 Which transaction?" fire when the user clearly meant the last ping. Quoted replies still take precedence.
   - **Photo-only reply copy.** No more fake `note` intent. Sends `📎 Photo attached to {merchant} ${amount}.` and leaves the `notes` column alone. (Photos with text alongside still apply both: image saved + text intents executed + stitched confirmation.)
+- 2026-05-04 — **Phase 5** (stats & charts):
+  - Migration 0008: `balance_snapshots` table (RLS owner-select, unique on `(account_id, date)`). Two `security_invoker` views — `v_spending` (single-source-of-truth filter for "outflows": pending/transfer/refund/excluded all stripped, plus `Income/Transfer/Refund` categories excluded) and `v_net_worth_daily` (assets minus liabilities by account type per user per day). Types regenerated.
+  - `handlers/snapshot_balances.ts` — per-item Plaid `accountsBalanceGet` → updates `accounts.{current,available}_balance` → upserts a `balance_snapshots` row keyed `(account_id, today)`. Idempotent.
+  - `app/api/cron/snapshot-balances/route.ts` — `CRON_SECRET`-gated GET, fans out one QStash job per active item.
+  - QStash dispatcher + `lib/qstash.ts` inline-dispatch both route `snapshot_balances`.
+  - **Initial seed**: ran a one-off SQL upsert of today's snapshots from `accounts.current_balance` so the Net Worth chart has at least one data point on day-zero render. Cron will keep filling forward.
+  - `recharts` 3.8 installed.
+  - Three Recharts client components: `<SpendingDonut>` (donut + center total + 6-slice legend with "+ N more" tail), `<SpendingBars>` (daily bars for current month, day-of-month X axis), `<NetWorthLine>` (area chart with amber gradient, 90-day window, compact `$Xk` ticks). All use `var(--chart-1..5)` tokens so they pick up the warm-dark palette.
+  - `<StatCard>` — top-row card with kicker, big italic Fraunces value, color-aware delta pill (good = emerald, bad = rose, neutral = muted), footnote.
+  - Dashboard rebuild (`app/(app)/page.tsx`): server component does parallel `Promise.all` over `v_spending` (last + this month), `v_net_worth_daily` (last 90d), recent transactions, categories. Aggregates by category and by date in JS. Renders empty state if no accounts. Uses `force-dynamic`.
+  - `<RealtimeListener>` mounted in `(app)/layout.tsx`: subscribes to `transactions` and `accounts` Postgres changes filtered by `user_id`, debounces 400ms, calls `router.refresh()` so server pages re-fetch without a hard reload.
 
 ---
 
@@ -94,22 +105,25 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Up next
 
-**Phase 5 — Stats & charts** is the obvious next phase. Per [docs/07-build-plan.md §Phase 5](docs/07-build-plan.md):
+**Phase 5 wrap-up — one cron-job.org config + smoke-test the dashboard.**
 
-- Migration `0008_stats.sql` — `balance_snapshots` table + `v_spending` and `v_net_worth_daily` views.
-- `handlers/snapshot_balances.ts` + `/api/cron/snapshot-balances` for daily 03:00 balance pulls.
-- `/api/stats/{spending,net-worth,category-mix}` endpoints reading the views.
-- Dashboard: `<SpendingByCategory>` donut, `<SpendingOverTime>` bar, `<NetWorthChart>` line, plus header cards (spent this month, net worth).
-- `<RealtimeListener>` on `(app)/layout.tsx` subscribed to `transactions` + `accounts` for instant chart refresh.
-- `/transactions` filters: date range, category, account, search, toggles — URL-driven state.
+1. **cron-job.org** → schedule a daily 03:00 GET to `https://finance-planning-nu.vercel.app/api/cron/snapshot-balances` with `Authorization: Bearer <CRON_SECRET>`. After a few days, the net-worth chart will start showing real movement instead of a single seeded point.
 
-**Phase 1 wrap-up still pending** (do whenever — non-blocking for P5):
+2. **Visual smoke-test** at `/`:
+   - Top cards: "Spent this month" total + "vs last" delta; "Net worth" + 30d delta.
+   - Donut: spending by category, this month, with center total + legend (top 6 + "+ N more").
+   - Bars: daily spending, this month (zero days included).
+   - Area: net-worth line, last 90 days (currently 1 point — will fill in).
+   - Recent activity: last 8 non-deleted transactions.
+   - Realtime: edit a category via WhatsApp or the picker — dashboard re-renders within a second.
+
+**Phase 1 wrap-up still pending** (do whenever):
 - **Plaid Dashboard** → Webhook URL → `https://finance-planning-nu.vercel.app/api/plaid/webhook`
 - **cron-job.org** → hourly GET `https://finance-planning-nu.vercel.app/api/cron/sync-fallback` with `Authorization: Bearer <CRON_SECRET>`
 
-**Phase 6 candidates** (open-ended, pick what's actually useful):
-- Transaction detail page with signed-URL receipt thumbnails (so the WA-uploaded photos are viewable in the web UI).
-- `/admin/health` page (categorization source mix, WA delivery latency, recent failed jobs).
+**Then** — `/transactions` filters (date range, category, account, search, toggles, URL-driven), or jump to **Phase 6** polish:
+- Transaction detail page with signed-URL receipt thumbnails (Phase 4's WA-uploaded photos viewable in the web UI).
+- `/admin/health` (categorization source mix, WA latency, recent failed jobs).
 - Category management (rename / recolor / merge).
 - Manual transaction creation (cash).
 - CSV export.
@@ -146,6 +160,9 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 - 2026-05-04 — **Multi-action replies, single Action object.** Originally the intent schema was a discriminated union forcing one action per reply ("Don't combine intents" in the prompt). First real test ("categorize correctly and split half and half") proved that wrong — Claude picked split, dropped the recategorize. New schema: one `Action` object with optional `recategorize` / `split` / `note` / `exclude_set` / `unclear` fields, applied in a single DB update with stitched confirmation. Intent label on the inbound row is now compound (`recategorize+split`).
 - 2026-05-04 — **No-quote replies match the latest notification, not "exactly one un-edited tx."** Original logic required exactly one tx with `last_notified_at >= now()-60min AND last_user_edit_at IS NULL` — too conservative; user got "🤔 Which transaction?" even when there was a single obvious target. New rule: take the SINGLE most-recent outbound `tx_notification`'s `related_transaction_id` within 60 min. Quoted replies still take precedence. Risk traded: stray messages within the window apply to the latest tx (acceptable; user can recategorize again).
 - 2026-05-04 — **Photos do NOT trigger OCR or auto-action.** They are stored in `receipts/{user_id}/{tx_id}/{uuid}.{ext}` and listed in `transaction_attachments`. That's it. The text portion of the same WhatsApp message is parsed independently and applied. Reasoning: receipt OCR is a Phase 6+ feature with its own accuracy/risk surface; for now the photo is just an audit artifact.
+- 2026-05-04 — **Stats aggregation in JS, not Postgres GROUP BY.** PostgREST doesn't expose `GROUP BY` over the typed Supabase JS client, and our row counts (single user, ≤ a few hundred tx/month) are tiny. The dashboard pulls raw `v_spending` rows for two months in one query and aggregates by category + by date in JS. Avoids an RPC + migration; if rows ever spike we add a server-side rollup view.
+- 2026-05-04 — **Realtime via `router.refresh()`, debounced 400ms.** Cheaper than client-side cache invalidation: the closest server component re-runs its data fetch with no per-component invalidation logic, and a 400ms coalesce window prevents 30 separate refreshes during a Plaid sync that adds 30 rows. Trade-off: the whole page re-renders on every change, which is fine for a single-user dashboard with cheap queries.
+- 2026-05-04 — **Snapshot job is per-item, not per-user.** Spec said `snapshot_balances` body `{}` aggregating all items in one job; we deviated to `{plaid_item_id}` matching the `sync_plaid_item` shape. Reason: one slow Plaid call on a flaky bank shouldn't drag the whole batch, and QStash retries should be scoped to the failed item.
 
 ---
 

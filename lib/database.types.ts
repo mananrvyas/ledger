@@ -106,6 +106,44 @@ export type Database = {
         }
         Relationships: []
       }
+      balance_snapshots: {
+        Row: {
+          account_id: string
+          available_balance: number | null
+          current_balance: number | null
+          date: string
+          id: string
+          taken_at: string
+          user_id: string
+        }
+        Insert: {
+          account_id: string
+          available_balance?: number | null
+          current_balance?: number | null
+          date: string
+          id?: string
+          taken_at?: string
+          user_id: string
+        }
+        Update: {
+          account_id?: string
+          available_balance?: number | null
+          current_balance?: number | null
+          date?: string
+          id?: string
+          taken_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "balance_snapshots_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       categories: {
         Row: {
           color: string | null
@@ -335,6 +373,13 @@ export type Database = {
             referencedRelation: "transactions"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "transaction_attachments_transaction_id_fkey"
+            columns: ["transaction_id"]
+            isOneToOne: false
+            referencedRelation: "v_spending"
+            referencedColumns: ["id"]
+          },
         ]
       }
       transactions: {
@@ -474,10 +519,24 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "transactions_refund_pair_id_fkey"
+            columns: ["refund_pair_id"]
+            isOneToOne: false
+            referencedRelation: "v_spending"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "transactions_transfer_pair_id_fkey"
             columns: ["transfer_pair_id"]
             isOneToOne: false
             referencedRelation: "transactions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "transactions_transfer_pair_id_fkey"
+            columns: ["transfer_pair_id"]
+            isOneToOne: false
+            referencedRelation: "v_spending"
             referencedColumns: ["id"]
           },
         ]
@@ -548,11 +607,69 @@ export type Database = {
             referencedRelation: "transactions"
             referencedColumns: ["id"]
           },
+          {
+            foreignKeyName: "whatsapp_messages_related_transaction_id_fkey"
+            columns: ["related_transaction_id"]
+            isOneToOne: false
+            referencedRelation: "v_spending"
+            referencedColumns: ["id"]
+          },
         ]
       }
     }
     Views: {
-      [_ in never]: never
+      v_net_worth_daily: {
+        Row: {
+          date: string | null
+          net_worth: number | null
+          user_id: string | null
+        }
+        Relationships: []
+      }
+      v_spending: {
+        Row: {
+          account_id: string | null
+          amount: number | null
+          date: string | null
+          id: string | null
+          merchant_name: string | null
+          notes: string | null
+          split_type: string | null
+          user_category: string | null
+          user_id: string | null
+        }
+        Insert: {
+          account_id?: string | null
+          amount?: number | null
+          date?: string | null
+          id?: string | null
+          merchant_name?: string | null
+          notes?: string | null
+          split_type?: string | null
+          user_category?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          account_id?: string | null
+          amount?: number | null
+          date?: string | null
+          id?: string | null
+          merchant_name?: string | null
+          notes?: string | null
+          split_type?: string | null
+          user_category?: string | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "transactions_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Functions: {
       get_plaid_access_token: {

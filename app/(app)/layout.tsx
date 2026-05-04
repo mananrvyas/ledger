@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { Brand } from "@/components/brand";
 import { MainNav } from "@/components/app/main-nav";
+import { RealtimeListener } from "@/components/app/realtime-listener";
 import { Button } from "@/components/ui/button";
 import { signOut } from "./actions";
 
@@ -22,6 +23,7 @@ export default async function AppLayout({
 
   return (
     <div className="flex min-h-svh flex-col">
+      <RealtimeListener userId={user.id} />
       <header className="sticky top-0 z-30 border-b border-hairline bg-background/85 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-6">
           <div className="flex items-center gap-10">
