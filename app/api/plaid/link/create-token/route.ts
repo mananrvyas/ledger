@@ -32,10 +32,19 @@ export async function POST(_request: NextRequest) {
       ? (body.access_token as string | undefined)
       : undefined;
 
+  // In sandbox, pre-fill the phone number with a Plaid sandbox-valid value so
+  // Plaid Layer skips the phone-entry step (OTP `123456` still required).
+  // In production, leave it unset — Plaid Layer will ask the user for their
+  // real number, or skip Layer entirely depending on their setup.
+  const isSandbox = process.env.PLAID_ENV === "sandbox";
+
   const plaid = getPlaidClient();
   try {
     const linkResp = await plaid.linkTokenCreate({
-      user: { client_user_id: user.id },
+      user: {
+        client_user_id: user.id,
+        ...(isSandbox ? { phone_number: "+14155550123" } : {}),
+      },
       client_name: PLAID_CLIENT_NAME,
       products: accessToken ? undefined : PLAID_PRODUCTS,
       country_codes: PLAID_COUNTRY_CODES,
