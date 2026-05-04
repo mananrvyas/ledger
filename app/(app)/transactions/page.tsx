@@ -8,6 +8,7 @@ import {
 } from "@/lib/format";
 import { CategoryPill, type CategoryMeta } from "@/components/app/category-pill";
 import { CategoryPicker } from "@/components/app/category-picker";
+import { RecategorizeAllButton } from "@/components/app/recategorize-all-button";
 import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -81,11 +82,14 @@ export default async function TransactionsPage() {
           <h1 className="font-display text-5xl italic font-normal leading-[1] text-foreground">
             Transactions.
           </h1>
-          <p className="font-mono text-[11px] tabular-nums tracking-[0.16em] text-muted-foreground/70">
-            {count !== null && count !== undefined
-              ? `showing ${rows.length} of ${count}`
-              : `${rows.length} loaded`}
-          </p>
+          <div className="flex items-center gap-4">
+            <p className="font-mono text-[11px] tabular-nums tracking-[0.16em] text-muted-foreground/70">
+              {count !== null && count !== undefined
+                ? `showing ${rows.length} of ${count}`
+                : `${rows.length} loaded`}
+            </p>
+            <RecategorizeAllButton />
+          </div>
         </div>
         <div className="rule-amber w-20" />
       </header>

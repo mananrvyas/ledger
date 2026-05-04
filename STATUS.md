@@ -53,6 +53,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
   - `components/app/category-pill.tsx` + `components/app/category-picker.tsx` — Base UI Popover + cmdk Command; toast + `router.refresh()` after PATCH.
   - `/transactions` page: 5-col grid with inline category picker, pending / transfer / refund / split indicators, dimmed row when excluded.
   - shadcn primitives added: popover, command, dialog, textarea, input-group.
+  - **Recategorize button** on `/transactions` (`components/app/recategorize-all-button.tsx`): plain click runs missing-only backfill; Shift-click force-recategorizes everything (with confirm).
 
 ---
 
@@ -103,6 +104,15 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 - 2026-05-03 — **Plaid webhook signature verification deferred.** Plaid signs webhooks via JWT keyed against a JWKS endpoint. Implementing this end-to-end is non-trivial and the blast radius is currently bounded — the webhook only enqueues idempotent sync jobs against an existing `item_id`. Wire signature verification before we have any side-effect-bearing operations (Phase 3 onward).
 - 2026-05-03 — **Vercel canonical URL pinned**: `https://finance-planning-nu.vercel.app` (Vercel auto-assigned this short alias since `finance-planning.vercel.app` was taken). Cron-job.org and Plaid webhook config use this stable URL; QStash callback URLs fall back to `VERCEL_URL` when `NEXT_PUBLIC_APP_URL`/`APP_URL` aren't set. The long `*-redacted-team.vercel.app` form also works but is uglier; the per-deployment `*-{hash}-...` URLs change every push and must NOT be used in env vars or external configs.
 - 2026-05-03 — **Plaid env: temporarily on Sandbox.** All five OAuth institutions (Amex, Chase, Discover, Robinhood, PayPal) hit the "registration in review" gate on Production. Sandbox lets us exercise the full pipeline (encryption, webhooks, sync, UI) against synthetic First Platypus Bank / Houndstooth Bank data while we wait. Test creds: `user_good` / `pass_good`, MFA `1234`. Flip back to `PLAID_ENV=production` + production secret once OAuth registrations clear at https://dashboard.plaid.com/activity/status/oauth-institutions.
+
+---
+
+## Known issues / minor bugs
+
+> Things that work but aren't quite right. Fix as time allows; don't ship to a real (multi-)user without addressing.
+
+- **`category_rules.times_applied` doesn't actually increment.** [lib/categorize.ts:62](lib/categorize.ts) writes a literal `1` instead of `times_applied + 1` when a rule matches. The Supabase JS client doesn't expose Postgres `+= 1` syntax — fix is a SECURITY DEFINER RPC `increment_category_rule_usage(user_id, merchant_pattern)` that does an atomic `UPDATE … SET times_applied = times_applied + 1, last_applied_at = now()`. Cosmetic for one user (the column was meant to power "your most-trained rules" analytics in Phase 6); not a correctness bug — wrong category is never returned.
+- **Plaid webhook signature verification still deferred** (decision logged earlier). Acceptable while webhooks only enqueue idempotent syncs; **must** be wired before Phase 3 lands WhatsApp side effects.
 
 ---
 
