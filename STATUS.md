@@ -9,7 +9,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Current phase
 
-**Phase 4 — WhatsApp inbound** — code complete + deployed. Awaiting one Twilio Console step (point sandbox inbound webhook at `/api/whatsapp/webhook`) before replies actually flow.
+**Phase 4 — WhatsApp inbound** — live + verified end-to-end. Twilio sandbox webhook is pointed at the production endpoint. All 5 intents, multi-action replies, photo attachments, latest-notified fallback all verified against the real United Airlines $500 sandbox tx. Up next: Phase 5 (stats & charts) or Phase 1 wrap-up (Plaid webhook URL + cron-job.org).
 
 ---
 
@@ -78,6 +78,11 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
     7. Stamp inbound row with `intent` + `parsed_payload` (jsonb of the typed Intent) + `related_transaction_id`.
   - `app/api/whatsapp/webhook/route.ts` — single endpoint serving both inbound messages AND Twilio status callbacks. **HMAC-SHA1 signature verification** via `twilio.validateRequest` (the SDK helper handles the URL+sorted-params byte sequence exactly). Status callbacks update outbound row's `status`. Inbound messages insert + enqueue `parse_wa_reply`. Always returns 200/empty TwiML on logical failures so Twilio doesn't retry. Idempotent on `twilio_message_sid` for inbound dedup.
   - QStash dispatcher (`/api/qstash/job/[type]`) routes `parse_wa_reply`. `lib/qstash.ts` inline-dispatch handles it locally too.
+  - **Verified end-to-end** in production: photo-only reply attached as `image/jpeg` (496 KB) to `receipts/{user_id}/{tx_id}/{uuid}.jpg`, `transaction_attachments` row written with `source='whatsapp'`. Quoted-reply "split half and half" applied `split_type=ratio, split_value=0.5`, `effective_amount` recomputed to $250 via the generated column.
+- 2026-05-04 — **Phase 4 — post-launch fixes** (commit `426824f`):
+  - **Multi-action replies.** `lib/intent.ts` schema is now a single `Action` object with optional `recategorize`/`split`/`note`/`exclude_set`/`unclear` fields, instead of a discriminated single-intent union. Prompt explicitly allows combinations: "categorize as travel and split half" applies BOTH in one DB update + stitched confirmation. `whatsapp_messages.intent` is now a compound label like `recategorize+split`, with the structured `Action` in `parsed_payload.action`.
+  - **Latest-notified matching.** No-quote replies now resolve to the SINGLE most-recent outbound `tx_notification`'s `related_transaction_id` within 60 min. Dropped the "exactly one candidate" + "last_user_edit_at IS NULL" gates that were making "🤔 Which transaction?" fire when the user clearly meant the last ping. Quoted replies still take precedence.
+  - **Photo-only reply copy.** No more fake `note` intent. Sends `📎 Photo attached to {merchant} ${amount}.` and leaves the `notes` column alone. (Photos with text alongside still apply both: image saved + text intents executed + stitched confirmation.)
 
 ---
 
@@ -89,30 +94,25 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Up next
 
-**Phase 4 wrap-up — one Twilio Console step, then smoke-test the 5 intents.**
+**Phase 5 — Stats & charts** is the obvious next phase. Per [docs/07-build-plan.md §Phase 5](docs/07-build-plan.md):
 
-1. **Twilio Console → Messaging → Try it out → Send a WhatsApp message → Sandbox settings**:
-   - "When a message comes in" → `https://finance-planning-nu.vercel.app/api/whatsapp/webhook` (POST)
-   - "Status callback URL" → same URL (the route handles both — distinguished by `MessageStatus` field presence)
+- Migration `0008_stats.sql` — `balance_snapshots` table + `v_spending` and `v_net_worth_daily` views.
+- `handlers/snapshot_balances.ts` + `/api/cron/snapshot-balances` for daily 03:00 balance pulls.
+- `/api/stats/{spending,net-worth,category-mix}` endpoints reading the views.
+- Dashboard: `<SpendingByCategory>` donut, `<SpendingOverTime>` bar, `<NetWorthChart>` line, plus header cards (spent this month, net worth).
+- `<RealtimeListener>` on `(app)/layout.tsx` subscribed to `transactions` + `accounts` for instant chart refresh.
+- `/transactions` filters: date range, category, account, search, toggles — URL-driven state.
 
-2. From your phone, fire a WA notification (TestWA button, or wait for a real Plaid sync) and reply to it. Try each intent path:
-   - **recategorize** (no quote): "this is groceries" → `user_category` flips, `category_rules` row upserted, ack `✅ Recategorized to Groceries.`
-   - **split (ratio)** with quoted reply: "split 1/3" → `split_type=ratio, split_value=0.3333`, `effective_amount` recomputes via the generated column, ack shows your share.
-   - **split (percent)**: "20%" → `split_type=percent, split_value=20`.
-   - **split (fixed)**: "$8" → `split_type=fixed, split_value=8`.
-   - **exclude**: "ignore this" → `excluded_from_stats=true`, row dims on `/transactions`.
-   - **include** (after exclude): "include this" → flips back.
-   - **note**: "with sarah and mike" → `notes` column populated.
-   - **photo**: long-press → reply → attach photo. Attachment lands in Storage at `receipts/{user_id}/{tx_id}/{uuid}.jpg`, `transaction_attachments` row created.
-   - **stray "lol"**: with no recent un-edited tx → bot replies `🤔 Which transaction? …`.
-
-3. Verify in DB: every inbound shows `intent IS NOT NULL` + `parsed_payload` populated. Outbound confirmations all logged. Status callbacks bump `status` from `sent` → `delivered` → `read`.
-
-**Phase 1 wrap-up still pending** (whenever ready):
+**Phase 1 wrap-up still pending** (do whenever — non-blocking for P5):
 - **Plaid Dashboard** → Webhook URL → `https://finance-planning-nu.vercel.app/api/plaid/webhook`
 - **cron-job.org** → hourly GET `https://finance-planning-nu.vercel.app/api/cron/sync-fallback` with `Authorization: Bearer <CRON_SECRET>`
 
-**Then Phase 5 — Stats & charts**: spending donut, net-worth line, realtime listener.
+**Phase 6 candidates** (open-ended, pick what's actually useful):
+- Transaction detail page with signed-URL receipt thumbnails (so the WA-uploaded photos are viewable in the web UI).
+- `/admin/health` page (categorization source mix, WA delivery latency, recent failed jobs).
+- Category management (rename / recolor / merge).
+- Manual transaction creation (cash).
+- CSV export.
 
 ---
 
@@ -143,6 +143,9 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 - 2026-05-03 — **Twilio inbound signature verification: ON.** The `/api/whatsapp/webhook` route validates `X-Twilio-Signature` (HMAC-SHA1 of full URL + sorted form params) via `twilio.validateRequest` before any DB write or job enqueue. Unlike Plaid (still deferred), this one is non-negotiable because the webhook causes side effects on real transactions (DB writes, outbound WA confirmations).
 - 2026-05-03 — **WA reply matching window: 60 min, single-candidate only.** `parse_wa_reply` will silently apply an intent to a transaction *only* if exactly one tx is `last_notified_at >= now() - 60min AND last_user_edit_at IS NULL`. Two or more candidates → ask. Zero candidates → ask. This trades some friction (after a flurry of 5 notifications, replies need to be quoted) for never silently editing the wrong row.
 - 2026-05-03 — **Receipts bucket = private.** All reads must go through Supabase Storage signed URLs (added in Phase 6 / detail view). Path layout `{user_id}/{tx_id}/{uuid}.{ext}` lets the storage policy authorize on `auth.uid() = first_segment` cleanly.
+- 2026-05-04 — **Multi-action replies, single Action object.** Originally the intent schema was a discriminated union forcing one action per reply ("Don't combine intents" in the prompt). First real test ("categorize correctly and split half and half") proved that wrong — Claude picked split, dropped the recategorize. New schema: one `Action` object with optional `recategorize` / `split` / `note` / `exclude_set` / `unclear` fields, applied in a single DB update with stitched confirmation. Intent label on the inbound row is now compound (`recategorize+split`).
+- 2026-05-04 — **No-quote replies match the latest notification, not "exactly one un-edited tx."** Original logic required exactly one tx with `last_notified_at >= now()-60min AND last_user_edit_at IS NULL` — too conservative; user got "🤔 Which transaction?" even when there was a single obvious target. New rule: take the SINGLE most-recent outbound `tx_notification`'s `related_transaction_id` within 60 min. Quoted replies still take precedence. Risk traded: stray messages within the window apply to the latest tx (acceptable; user can recategorize again).
+- 2026-05-04 — **Photos do NOT trigger OCR or auto-action.** They are stored in `receipts/{user_id}/{tx_id}/{uuid}.{ext}` and listed in `transaction_attachments`. That's it. The text portion of the same WhatsApp message is parsed independently and applied. Reasoning: receipt OCR is a Phase 6+ feature with its own accuracy/risk surface; for now the photo is just an audit artifact.
 
 ---
 
