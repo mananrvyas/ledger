@@ -141,6 +141,13 @@ async function runJobInline<T extends Record<string, unknown>>(
       );
       return;
     }
+    case "parse_wa_reply": {
+      const m = await import("@/handlers/parse_wa_reply");
+      await m.parseWaReplyHandler(
+        payload as { whatsapp_message_id: string },
+      );
+      return;
+    }
     default:
       throw new Error(`Inline dispatch: unknown job type ${job.type}`);
   }

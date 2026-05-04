@@ -9,7 +9,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Current phase
 
-**Phase 3 — WhatsApp out** — code complete; pending two env-var fixes from the user (live Twilio creds + WhatsApp number) before notifications will actually send.
+**Phase 4 — WhatsApp inbound** — code complete + deployed. Awaiting one Twilio Console step (point sandbox inbound webhook at `/api/whatsapp/webhook`) before replies actually flow.
 
 ---
 
@@ -63,6 +63,21 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
   - `sync_plaid_item` now reads previous transaction state on `modified`, computes `was_pending && now_posted && |Δamount| / baseline > 5%`, and enqueues `send_wa_notification` with `variant='re-notify'` when material.
   - QStash dispatcher routes `send_wa_notification`.
   - Twilio SDK installed.
+  - **Verified end-to-end** in production (`finance-planning-nu.vercel.app`): the test-WA button on `/transactions` enqueues a job, the worker formats + sends, the message lands on the user's phone within seconds. Local dev was 500ing because QStash refuses to publish to localhost; fixed by adding inline-dispatch in `lib/qstash.ts` when `APP_URL` resolves to loopback.
+  - Admin endpoint `/api/admin/test-wa-notification` + `<TestWhatsAppButton />` — picks the user's most recent non-transfer transaction (or one passed by ID), clears `last_notified_at` so the worker doesn't skip, and enqueues with a unique idempotency key. One-shot test path that doesn't flood the inbox.
+- 2026-05-03 — **Phase 4** (WhatsApp inbound — code):
+  - Migration 0007 (`transaction_attachments` table with FK to `transactions`, RLS owner-policy, `source` check constraint for `whatsapp|web_upload`; private `receipts` Storage bucket; storage policies keyed on first path segment = `auth.uid()`). Types regenerated.
+  - `lib/intent.ts` — Zod-typed discriminated-union schema for the 6 intents (`recategorize`, `split`, `note`, `exclude`, `include`, `unknown`) + Claude Haiku 4.5 prompt + `parseWhatsAppIntent` helper. Defense-in-depth: if Claude returns a `new_category` not in the user's list, coerce to "Other".
+  - `handlers/parse_wa_reply.ts` — full pipeline:
+    1. Idempotency: skip if `intent IS NOT NULL` (handles QStash double-delivery).
+    2. Match transaction: quoted reply (`OriginalRepliedMessageSid` → outbound row's `related_transaction_id`) → recent un-edited within 60min → ask "which transaction?" and exit.
+    3. For each Twilio media URL: HTTP basic auth download, validate MIME (image/* or application/pdf), validate size (<10MB), upload to `receipts/{user_id}/{tx_id}/{uuid}.{ext}`, insert `transaction_attachments` row.
+    4. Run intent parser on text body (skip if empty + media present → treat as note).
+    5. Apply intent: PATCH transactions, upsert `category_rules` for recategorize.
+    6. Send Twilio confirmation via `sendAndLog` helper (logs every outbound, including the clarifier).
+    7. Stamp inbound row with `intent` + `parsed_payload` (jsonb of the typed Intent) + `related_transaction_id`.
+  - `app/api/whatsapp/webhook/route.ts` — single endpoint serving both inbound messages AND Twilio status callbacks. **HMAC-SHA1 signature verification** via `twilio.validateRequest` (the SDK helper handles the URL+sorted-params byte sequence exactly). Status callbacks update outbound row's `status`. Inbound messages insert + enqueue `parse_wa_reply`. Always returns 200/empty TwiML on logical failures so Twilio doesn't retry. Idempotent on `twilio_message_sid` for inbound dedup.
+  - QStash dispatcher (`/api/qstash/job/[type]`) routes `parse_wa_reply`. `lib/qstash.ts` inline-dispatch handles it locally too.
 
 ---
 
@@ -74,25 +89,30 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Up next
 
-**Phase 3 wrap-up — two Twilio env-var fixes, then smoke test.**
+**Phase 4 wrap-up — one Twilio Console step, then smoke-test the 5 intents.**
 
-The Twilio creds currently in `.env.local` are TEST credentials (labeled as such by Twilio). Test creds **cannot** send real WhatsApp messages — they only work with magic test phone numbers. To actually receive notifications you need to:
+1. **Twilio Console → Messaging → Try it out → Send a WhatsApp message → Sandbox settings**:
+   - "When a message comes in" → `https://finance-planning-nu.vercel.app/api/whatsapp/webhook` (POST)
+   - "Status callback URL" → same URL (the route handles both — distinguished by `MessageStatus` field presence)
 
-1. **Replace `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`** with your **live** values from Twilio Console → Account → API keys & tokens (the section labeled "Live Credentials", not "Test Credentials"). Update `.env.local` AND Vercel for production + preview + development.
+2. From your phone, fire a WA notification (TestWA button, or wait for a real Plaid sync) and reply to it. Try each intent path:
+   - **recategorize** (no quote): "this is groceries" → `user_category` flips, `category_rules` row upserted, ack `✅ Recategorized to Groceries.`
+   - **split (ratio)** with quoted reply: "split 1/3" → `split_type=ratio, split_value=0.3333`, `effective_amount` recomputes via the generated column, ack shows your share.
+   - **split (percent)**: "20%" → `split_type=percent, split_value=20`.
+   - **split (fixed)**: "$8" → `split_type=fixed, split_value=8`.
+   - **exclude**: "ignore this" → `excluded_from_stats=true`, row dims on `/transactions`.
+   - **include** (after exclude): "include this" → flips back.
+   - **note**: "with sarah and mike" → `notes` column populated.
+   - **photo**: long-press → reply → attach photo. Attachment lands in Storage at `receipts/{user_id}/{tx_id}/{uuid}.jpg`, `transaction_attachments` row created.
+   - **stray "lol"**: with no recent un-edited tx → bot replies `🤔 Which transaction? …`.
 
-2. **Fill `USER_WHATSAPP_TO`** with your WhatsApp number, formatted as `whatsapp:+1XXXXXXXXXX` (the same number you used to `join {keyword}` in the sandbox).
-
-After those two:
-
-3. Click the **Recategorize** button on `/transactions` — it'll re-categorize the 52 reset rows AND queue a WhatsApp notification for each non-transfer one. **You'll get ~50 messages in a row.** That's intended for the test, but you may want to do `LIMIT 5` instead via SQL or just connect a fresh sandbox account.
-4. Verify: each notification shows amount + merchant + category + a hint to reply. `whatsapp_messages` table has `direction='outbound'` rows with `status='sent'` (or `'delivered'`/`'read'`). `transactions.last_notified_at` + `notified_amount` populated.
-5. Try a sandbox transaction that posts pending then changes >5% on settle (might not happen naturally in sandbox; the `re-notify` path is wired but easier to verify in real Production once approved).
-
-**Then Phase 4 — WhatsApp in**: Twilio inbound webhook, intent parser, reply matching, photo attachments.
+3. Verify in DB: every inbound shows `intent IS NOT NULL` + `parsed_payload` populated. Outbound confirmations all logged. Status callbacks bump `status` from `sent` → `delivered` → `read`.
 
 **Phase 1 wrap-up still pending** (whenever ready):
 - **Plaid Dashboard** → Webhook URL → `https://finance-planning-nu.vercel.app/api/plaid/webhook`
 - **cron-job.org** → hourly GET `https://finance-planning-nu.vercel.app/api/cron/sync-fallback` with `Authorization: Bearer <CRON_SECRET>`
+
+**Then Phase 5 — Stats & charts**: spending donut, net-worth line, realtime listener.
 
 ---
 
@@ -120,6 +140,9 @@ After those two:
 - 2026-05-03 — **Plaid webhook signature verification deferred.** Plaid signs webhooks via JWT keyed against a JWKS endpoint. Implementing this end-to-end is non-trivial and the blast radius is currently bounded — the webhook only enqueues idempotent sync jobs against an existing `item_id`. Wire signature verification before we have any side-effect-bearing operations (Phase 3 onward).
 - 2026-05-03 — **Vercel canonical URL pinned**: `https://finance-planning-nu.vercel.app` (Vercel auto-assigned this short alias since `finance-planning.vercel.app` was taken). Cron-job.org and Plaid webhook config use this stable URL; QStash callback URLs fall back to `VERCEL_URL` when `NEXT_PUBLIC_APP_URL`/`APP_URL` aren't set. The long `*-redacted-team.vercel.app` form also works but is uglier; the per-deployment `*-{hash}-...` URLs change every push and must NOT be used in env vars or external configs.
 - 2026-05-03 — **Plaid env: temporarily on Sandbox.** All five OAuth institutions (Amex, Chase, Discover, Robinhood, PayPal) hit the "registration in review" gate on Production. Sandbox lets us exercise the full pipeline (encryption, webhooks, sync, UI) against synthetic First Platypus Bank / Houndstooth Bank data while we wait. Test creds: `user_good` / `pass_good`, MFA `1234`. Flip back to `PLAID_ENV=production` + production secret once OAuth registrations clear at https://dashboard.plaid.com/activity/status/oauth-institutions.
+- 2026-05-03 — **Twilio inbound signature verification: ON.** The `/api/whatsapp/webhook` route validates `X-Twilio-Signature` (HMAC-SHA1 of full URL + sorted form params) via `twilio.validateRequest` before any DB write or job enqueue. Unlike Plaid (still deferred), this one is non-negotiable because the webhook causes side effects on real transactions (DB writes, outbound WA confirmations).
+- 2026-05-03 — **WA reply matching window: 60 min, single-candidate only.** `parse_wa_reply` will silently apply an intent to a transaction *only* if exactly one tx is `last_notified_at >= now() - 60min AND last_user_edit_at IS NULL`. Two or more candidates → ask. Zero candidates → ask. This trades some friction (after a flurry of 5 notifications, replies need to be quoted) for never silently editing the wrong row.
+- 2026-05-03 — **Receipts bucket = private.** All reads must go through Supabase Storage signed URLs (added in Phase 6 / detail view). Path layout `{user_id}/{tx_id}/{uuid}.{ext}` lets the storage policy authorize on `auth.uid() = first_segment` cleanly.
 
 ---
 
@@ -128,6 +151,7 @@ After those two:
 - 2026-05-03 — **Backfilled `plaid_category` / `plaid_category_detail` / `plaid_confidence`** on existing rows from `transactions.raw->'personal_finance_category'`. Pre-fix: 0 rows had these columns populated because they were synced before migration 0004; the Plaid PFC was sitting unused inside `raw` jsonb. Post-fix: 27 of 54 rows (~50%) now have HIGH/VERY_HIGH Plaid confidence ready for the Plaid tier of the waterfall. **No Plaid contributions seen until after this fix.**
 - 2026-05-03 — **Deleted bad rule** `category_rules` row `united airlines → Eating Out`. User mistakenly trained it during a smoke test. Plaid PFC for United Airlines is `TRAVEL_FLIGHTS` at VERY_HIGH confidence, so re-running the waterfall categorizes it correctly as Travel.
 - 2026-05-03 — **Reset categorization on all non-manual rows** (`user_category` + `category_source` + `ai_*` set to NULL). Manual edits preserved. Recategorize button (or `/api/admin/backfill-categorize`) re-fills via the now-fixed waterfall.
+- 2026-05-03 — **Created private `receipts` Storage bucket** + storage policies authorizing on first-path-segment = `auth.uid()` (Phase 4 / migration 0007). Empty on creation; populated as inbound WA replies bring in photos.
 
 ---
 
@@ -136,7 +160,9 @@ After those two:
 > Things that work but aren't quite right. Fix as time allows; don't ship to a real (multi-)user without addressing.
 
 - **`category_rules.times_applied` doesn't actually increment.** [lib/categorize.ts:62](lib/categorize.ts) writes a literal `1` instead of `times_applied + 1` when a rule matches. The Supabase JS client doesn't expose Postgres `+= 1` syntax — fix is a SECURITY DEFINER RPC `increment_category_rule_usage(user_id, merchant_pattern)` that does an atomic `UPDATE … SET times_applied = times_applied + 1, last_applied_at = now()`. Cosmetic for one user (the column was meant to power "your most-trained rules" analytics in Phase 6); not a correctness bug — wrong category is never returned.
-- **Plaid webhook signature verification still deferred** (decision logged earlier). Acceptable while webhooks only enqueue idempotent syncs; **must** be wired before Phase 3 lands WhatsApp side effects.
+- **Plaid webhook signature verification still deferred** (decision logged earlier). Now the *only* unverified webhook in the system (Twilio inbound is signed as of P4). Plaid webhooks still only enqueue idempotent sync jobs against an existing `item_id`, so the blast radius remains bounded — but we should wire it before flipping back to Plaid Production with real bank data.
+- **No web UI for receipts yet.** Photos uploaded via WhatsApp land in the private `receipts` bucket and the `transaction_attachments` table, but `/transactions` doesn't render them. Phase 6 will add a transaction-detail page with signed-URL thumbnails.
+- **Inbound user_id resolution is single-user.** `app/api/whatsapp/webhook/route.ts:resolveInboundUserId` finds the most recent outbound row's `user_id`, falling back to "first user in `auth.users`" if there are no outbounds yet. Fine for one user; would need to map by `From` (WhatsApp number) → user lookup if we ever expand.
 
 ---
 

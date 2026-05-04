@@ -4,6 +4,7 @@ import { syncPlaidItem } from "@/handlers/sync_plaid_item";
 import { categorizeTransactionHandler } from "@/handlers/categorize_transaction";
 import { pairRefundHandler } from "@/handlers/pair_refund";
 import { sendWaNotificationHandler } from "@/handlers/send_wa_notification";
+import { parseWaReplyHandler } from "@/handlers/parse_wa_reply";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // seconds — sync can be slow on first run
@@ -71,6 +72,12 @@ export async function POST(
             transaction_id: string;
             variant: "new" | "re-notify";
           },
+        );
+        return Response.json({ ok: true, type, result });
+      }
+      case "parse_wa_reply": {
+        const result = await parseWaReplyHandler(
+          parsed.payload as { whatsapp_message_id: string },
         );
         return Response.json({ ok: true, type, result });
       }
