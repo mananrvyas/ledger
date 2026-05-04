@@ -10,6 +10,7 @@ import { CategoryPill, type CategoryMeta } from "@/components/app/category-pill"
 import { CategoryPicker } from "@/components/app/category-picker";
 import { RecategorizeAllButton } from "@/components/app/recategorize-all-button";
 import { SourceTag } from "@/components/app/source-tag";
+import { TestWhatsAppButton } from "@/components/app/test-whatsapp-button";
 import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -83,12 +84,13 @@ export default async function TransactionsPage() {
           <h1 className="font-display text-5xl italic font-normal leading-[1] text-foreground">
             Transactions.
           </h1>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
             <p className="font-mono text-[11px] tabular-nums tracking-[0.16em] text-muted-foreground/70">
               {count !== null && count !== undefined
                 ? `showing ${rows.length} of ${count}`
                 : `${rows.length} loaded`}
             </p>
+            <TestWhatsAppButton transactionId={rows[0]?.id} />
             <RecategorizeAllButton />
           </div>
         </div>
