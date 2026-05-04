@@ -1,6 +1,8 @@
 import { type NextRequest } from "next/server";
 import { verifyQstashSignature } from "@/lib/qstash";
 import { syncPlaidItem } from "@/handlers/sync_plaid_item";
+import { categorizeTransactionHandler } from "@/handlers/categorize_transaction";
+import { pairRefundHandler } from "@/handlers/pair_refund";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // seconds — sync can be slow on first run
@@ -47,6 +49,18 @@ export async function POST(
       case "sync_plaid_item": {
         const result = await syncPlaidItem(
           parsed.payload as { plaid_item_id: string },
+        );
+        return Response.json({ ok: true, type, result });
+      }
+      case "categorize_transaction": {
+        const result = await categorizeTransactionHandler(
+          parsed.payload as { transaction_id: string; force?: boolean },
+        );
+        return Response.json({ ok: true, type, result });
+      }
+      case "pair_refund": {
+        const result = await pairRefundHandler(
+          parsed.payload as { transaction_id: string },
         );
         return Response.json({ ok: true, type, result });
       }

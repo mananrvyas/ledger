@@ -107,6 +107,89 @@ export type Database = {
         }
         Relationships: []
       }
+      categories: {
+        Row: {
+          color: string | null
+          created_at: string
+          icon: string | null
+          id: string
+          is_default: boolean
+          name: string
+          parent_id: string | null
+          sort_order: number
+          user_id: string | null
+        }
+        Insert: {
+          color?: string | null
+          created_at?: string
+          icon?: string | null
+          id?: string
+          is_default?: boolean
+          name: string
+          parent_id?: string | null
+          sort_order?: number
+          user_id?: string | null
+        }
+        Update: {
+          color?: string | null
+          created_at?: string
+          icon?: string | null
+          id?: string
+          is_default?: boolean
+          name?: string
+          parent_id?: string | null
+          sort_order?: number
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "categories_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "categories"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      category_rules: {
+        Row: {
+          category_name: string
+          confidence: number
+          created_at: string
+          id: string
+          last_applied_at: string | null
+          merchant_pattern: string
+          source: string
+          times_applied: number
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          category_name: string
+          confidence?: number
+          created_at?: string
+          id?: string
+          last_applied_at?: string | null
+          merchant_pattern: string
+          source?: string
+          times_applied?: number
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          category_name?: string
+          confidence?: number
+          created_at?: string
+          id?: string
+          last_applied_at?: string | null
+          merchant_pattern?: string
+          source?: string
+          times_applied?: number
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       plaid_items: {
         Row: {
           access_token_enc: string | null
@@ -211,56 +294,122 @@ export type Database = {
       transactions: {
         Row: {
           account_id: string
+          ai_category: string | null
+          ai_confidence: number | null
+          ai_reasoning: string | null
           amount: number
           authorized_date: string | null
+          category_source: string | null
           created_at: string
           currency: string
           date: string
           deleted_at: string | null
+          effective_amount: number | null
+          excluded_from_stats: boolean
           id: string
           is_pending: boolean
+          is_refund: boolean
+          is_transfer: boolean
+          last_notified_at: string | null
+          last_user_edit_at: string | null
           merchant_logo_url: string | null
           merchant_name: string | null
           name: string | null
+          notes: string | null
+          notified_amount: number | null
+          plaid_category: string | null
+          plaid_category_detail: string | null
+          plaid_confidence: string | null
           plaid_transaction_id: string | null
           raw: Json | null
+          refund_pair_id: string | null
+          split_note: string | null
+          split_raw_input: string | null
+          split_type: string
+          split_value: number | null
+          transfer_pair_id: string | null
           updated_at: string
+          user_category: string | null
           user_id: string
         }
         Insert: {
           account_id: string
+          ai_category?: string | null
+          ai_confidence?: number | null
+          ai_reasoning?: string | null
           amount: number
           authorized_date?: string | null
+          category_source?: string | null
           created_at?: string
           currency?: string
           date: string
           deleted_at?: string | null
+          effective_amount?: number | null
+          excluded_from_stats?: boolean
           id?: string
           is_pending?: boolean
+          is_refund?: boolean
+          is_transfer?: boolean
+          last_notified_at?: string | null
+          last_user_edit_at?: string | null
           merchant_logo_url?: string | null
           merchant_name?: string | null
           name?: string | null
+          notes?: string | null
+          notified_amount?: number | null
+          plaid_category?: string | null
+          plaid_category_detail?: string | null
+          plaid_confidence?: string | null
           plaid_transaction_id?: string | null
           raw?: Json | null
+          refund_pair_id?: string | null
+          split_note?: string | null
+          split_raw_input?: string | null
+          split_type?: string
+          split_value?: number | null
+          transfer_pair_id?: string | null
           updated_at?: string
+          user_category?: string | null
           user_id: string
         }
         Update: {
           account_id?: string
+          ai_category?: string | null
+          ai_confidence?: number | null
+          ai_reasoning?: string | null
           amount?: number
           authorized_date?: string | null
+          category_source?: string | null
           created_at?: string
           currency?: string
           date?: string
           deleted_at?: string | null
+          effective_amount?: number | null
+          excluded_from_stats?: boolean
           id?: string
           is_pending?: boolean
+          is_refund?: boolean
+          is_transfer?: boolean
+          last_notified_at?: string | null
+          last_user_edit_at?: string | null
           merchant_logo_url?: string | null
           merchant_name?: string | null
           name?: string | null
+          notes?: string | null
+          notified_amount?: number | null
+          plaid_category?: string | null
+          plaid_category_detail?: string | null
+          plaid_confidence?: string | null
           plaid_transaction_id?: string | null
           raw?: Json | null
+          refund_pair_id?: string | null
+          split_note?: string | null
+          split_raw_input?: string | null
+          split_type?: string
+          split_value?: number | null
+          transfer_pair_id?: string | null
           updated_at?: string
+          user_category?: string | null
           user_id?: string
         }
         Relationships: [
@@ -269,6 +418,20 @@ export type Database = {
             columns: ["account_id"]
             isOneToOne: false
             referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "transactions_refund_pair_id_fkey"
+            columns: ["refund_pair_id"]
+            isOneToOne: false
+            referencedRelation: "transactions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "transactions_transfer_pair_id_fkey"
+            columns: ["transfer_pair_id"]
+            isOneToOne: false
+            referencedRelation: "transactions"
             referencedColumns: ["id"]
           },
         ]

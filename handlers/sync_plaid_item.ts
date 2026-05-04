@@ -7,6 +7,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import type { Json } from "@/lib/database.types";
 import { getDecryptedAccessToken } from "@/lib/encryption";
 import { getPlaidClient } from "@/lib/plaid";
+import { publishJob } from "@/lib/qstash";
 
 export type SyncResult = {
   added: number;
@@ -95,11 +96,19 @@ export async function syncPlaidItem(payload: {
   });
 
   // 6. Insert added transactions (upsert on plaid_transaction_id for idempotency).
+  let insertedRowIds: string[] = [];
   if (added.length > 0) {
     const insertRows = added
       .map((t) => {
         const accountId = accountMap.get(t.account_id);
         if (!accountId) return null;
+        const pfc = (t as unknown as {
+          personal_finance_category?: {
+            primary?: string;
+            detailed?: string;
+            confidence_level?: string;
+          };
+        }).personal_finance_category;
         return {
           account_id: accountId,
           user_id: item.user_id,
@@ -112,20 +121,25 @@ export async function syncPlaidItem(payload: {
           name: t.name,
           merchant_logo_url: t.logo_url ?? null,
           is_pending: t.pending,
+          plaid_category: pfc?.primary ?? null,
+          plaid_category_detail: pfc?.detailed ?? null,
+          plaid_confidence: pfc?.confidence_level ?? null,
           raw: t as unknown as Json,
         };
       })
       .filter(<T,>(x: T | null): x is T => x !== null);
 
     if (insertRows.length > 0) {
-      const { error: insErr } = await admin
+      const { data: insertedRows, error: insErr } = await admin
         .from("transactions")
-        .upsert(insertRows, { onConflict: "plaid_transaction_id" });
+        .upsert(insertRows, { onConflict: "plaid_transaction_id" })
+        .select("id");
       if (insErr) {
         throw new Error(
           `sync_plaid_item: insert added failed: ${insErr.message}`,
         );
       }
+      insertedRowIds = (insertedRows ?? []).map((r) => r.id);
     }
   }
 
@@ -170,6 +184,26 @@ export async function syncPlaidItem(payload: {
       error_message: null,
     })
     .eq("id", item.id);
+
+  // 10. Enqueue categorize_transaction for each newly inserted row. Best
+  //     effort — if QStash is down we silently skip; the backfill route or
+  //     fallback cron can catch up later. Don't throw inside the loop.
+  for (const id of insertedRowIds) {
+    try {
+      await publishJob({
+        type: "categorize_transaction",
+        idempotency_key: `categorize-${id}`,
+        payload: { transaction_id: id },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "publish failed";
+      await admin.from("app_events").insert({
+        user_id: item.user_id,
+        event_type: "qstash_publish_failed",
+        payload: { source: "sync_plaid_item", transaction_id: id, error: message },
+      });
+    }
+  }
 
   return {
     added: added.length,
