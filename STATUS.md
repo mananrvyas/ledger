@@ -9,13 +9,25 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Current phase
 
-**Phase 0 — Scaffold** (not started)
+**Phase 0 — Scaffold** (effectively done; pending: Sentry wizard, fill in 2 placeholder env vars)
 
 ---
 
 ## Done
 
 - 2026-05-03 — Planning docs (7 files in `docs/` + this tracker)
+- 2026-05-03 — **Phase 0**:
+  - Next.js 16.2.4 / React 19 / TS / Tailwind v4 / App Router scaffolded
+  - shadcn/ui (button, card, input, label, sonner) + lucide-react + sonner + date-fns
+  - Supabase SSR client (`lib/supabase/{client,server,middleware}.ts`), `proxy.ts` at root for session refresh + auth guard
+  - Email/password `/login` and `/signup` with server actions
+  - `(app)` layout with auth guard, header nav (Dashboard / Transactions / Accounts / Settings), sign-out
+  - Empty dashboard placeholder card
+  - `.env.local` populated for known secrets; placeholders for `SUPABASE_SERVICE_ROLE_KEY` and `USER_WHATSAPP_TO`
+  - Vercel project linked: `redacted-team/finance-planning`, GitHub auto-connected
+  - Production env vars uploaded to Vercel (16 vars, all 3 environments)
+  - First production deploy: <https://finance-planning-9fk8vrdvq-redacted-team.vercel.app>
+  - GitHub repo: <https://github.com/mananrvyas/finance-planning> (private)
 
 ---
 
@@ -27,11 +39,21 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Up next
 
-**Phase 0.1**: `npx create-next-app@latest` with TS, app router, Tailwind, ESLint.
+**Two cleanups before Phase 1 starts:**
 
-Then 0.2: create Supabase project and grab keys.
+1. **Fill `SUPABASE_SERVICE_ROLE_KEY`** in `.env.local` and on Vercel (production/preview/development).
+   - Get from Supabase Dashboard → Project → Settings → API → `service_role` (it's hidden behind a "Reveal" button).
+   - On Vercel: `vercel env add SUPABASE_SERVICE_ROLE_KEY production` (paste value), repeat for `preview` and `development`.
+2. **Run the Sentry wizard** (interactive — user runs locally):
+   ```bash
+   cd ~/Desktop/Projects/finance-planning
+   npx @sentry/wizard@latest -i nextjs --saas --org financial-planner --project javascript-nextjs
+   ```
+   Then commit the Sentry config files and redeploy.
 
-See [docs/07-build-plan.md §Phase 0](docs/07-build-plan.md) for the full task list.
+**Then Phase 1.1 starts**: enable Postgres extensions + create encryption helpers via Supabase MCP migrations.
+
+See [docs/07-build-plan.md §Phase 1](docs/07-build-plan.md) for the full task list.
 
 ---
 
@@ -54,6 +76,7 @@ See [docs/07-build-plan.md §Phase 0](docs/07-build-plan.md) for the full task l
 - 2026-05-03 — **Always guess, never ask**: WA notification always commits a category. User corrects via reply.
 - 2026-05-03 — **Store every Plaid response verbatim**: `plaid_webhooks.payload` (jsonb) for inbound, `transactions.raw` (jsonb) per-row, `app_events` for the full sync response.
 - 2026-05-03 — **Transfer pairing is synchronous** at the end of `categorize_transaction` to avoid the WA-notification race. `pair_refund` stays async.
+- 2026-05-03 — **Next.js 16 deprecates `middleware.ts` → `proxy.ts`.** Renamed the file and the exported function (`middleware` → `proxy`). All Supabase-SSR session-refresh logic stayed identical.
 
 ---
 
@@ -63,11 +86,14 @@ See [docs/07-build-plan.md §Phase 0](docs/07-build-plan.md) for the full task l
 - Whether `effective_amount` works as a Postgres generated column with our split logic, or needs a trigger. Verify in P2.1.
 - QStash free-tier limit (500 msg/day) holds in practice — measure during P2/P3.
 - Twilio sandbox session: confirm "join {keyword}" doesn't silently expire. Note any reconnect events.
+- Twilio "Test credentials" currently in `.env.local` won't actually send WhatsApp from the sandbox — replace with live Account SID / Auth Token before Phase 3.
 
 ---
 
 ## Notes
 
-(Use this section for one-off observations or todos that don't fit elsewhere — e.g., "the Chase Plaid item flagged ITEM_LOGIN_REQUIRED on day 3, took 6 hours for me to notice — surface this faster.")
-
-—
+- Vercel project ID: `prj_*` — see `.vercel/project.json` (gitignored).
+- Vercel team: `redacted-team` (slug: `redacted-team`).
+- Supabase project ID: `redacted-project-ref` (region: `us-west-2`, Postgres 17).
+- Vercel automatically connected the GitHub repo, so future pushes to `main` deploy to production preview and `vercel --prod` promotes.
+- Deployment Protection (Vercel SSO) is on by default for the deploy URL — opening the URL in an incognito browser will hit Vercel's auth wall. Disable in project settings if you want public access (Supabase auth still gates everything).
