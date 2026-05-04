@@ -9,7 +9,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Current phase
 
-**Phase 2 — Categorization** ✅ done. Ready for Phase 3 (WhatsApp out).
+**Phase 3 — WhatsApp out** — code complete; pending two env-var fixes from the user (live Twilio creds + WhatsApp number) before notifications will actually send.
 
 ---
 
@@ -55,6 +55,14 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
   - shadcn primitives added: popover, command, dialog, textarea, input-group.
   - **Recategorize button** on `/transactions` (`components/app/recategorize-all-button.tsx`): plain click runs missing-only backfill; Shift-click force-recategorizes everything (with confirm).
   - **Source tag** (`components/app/source-tag.tsx`) inline next to each category pill on `/transactions`: P (plaid, emerald) · R (rule, sky) · AI (primary amber) · M (manual). Tooltip on hover names the source. Legend in the footer of the page.
+- 2026-05-03 — **Phase 3** (WhatsApp out — code):
+  - Migration 0006 (`whatsapp_messages` table — both directions, RLS owner-select, audit-log style append-only). Types regenerated.
+  - `lib/twilio.ts` — Twilio SDK singleton + sandbox-aware `sendWhatsAppMessage`.
+  - `handlers/send_wa_notification.ts` — formats the body for `'new'` vs `'re-notify'` variants, inserts a pending `whatsapp_messages` row, calls Twilio, updates the row with the SID + status, stamps `transactions.last_notified_at` + `notified_amount` for the >5% re-notify rule.
+  - `categorize_transaction` enqueues `send_wa_notification` at the end for non-transfer transactions.
+  - `sync_plaid_item` now reads previous transaction state on `modified`, computes `was_pending && now_posted && |Δamount| / baseline > 5%`, and enqueues `send_wa_notification` with `variant='re-notify'` when material.
+  - QStash dispatcher routes `send_wa_notification`.
+  - Twilio SDK installed.
 
 ---
 
@@ -66,16 +74,23 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Up next
 
-**Phase 2 smoke tests** (do once after the deploy lands):
+**Phase 3 wrap-up — two Twilio env-var fixes, then smoke test.**
 
-1. POST `/api/admin/backfill-categorize` (signed in) to categorize all existing sandbox transactions. Watch Vercel logs for the worker invocations.
-2. Open `/transactions` — every row should show a category pill. Mostly Plaid-sourced (sandbox data has confident PFCs), some AI for ambiguous merchants.
-3. Click a category pill → pick a different one → confirm: row updates, toast appears, `category_rules` table has a new row keyed on the normalized merchant. Sync again — next transaction from that merchant should use the rule.
-4. Trigger a sandbox transfer (`/sandbox/item/fire_webhook` or via Plaid Link's "Test Transfer" UI if available) — both legs should auto-pair as Transfer.
+The Twilio creds currently in `.env.local` are TEST credentials (labeled as such by Twilio). Test creds **cannot** send real WhatsApp messages — they only work with magic test phone numbers. To actually receive notifications you need to:
 
-**Then Phase 3 — WhatsApp out**: Twilio sandbox setup, `whatsapp_messages` table, `send_wa_notification` worker, hook into end of `categorize_transaction`.
+1. **Replace `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN`** with your **live** values from Twilio Console → Account → API keys & tokens (the section labeled "Live Credentials", not "Test Credentials"). Update `.env.local` AND Vercel for production + preview + development.
 
-**Phase 1 wrap-up still pending** (do these whenever ready):
+2. **Fill `USER_WHATSAPP_TO`** with your WhatsApp number, formatted as `whatsapp:+1XXXXXXXXXX` (the same number you used to `join {keyword}` in the sandbox).
+
+After those two:
+
+3. Click the **Recategorize** button on `/transactions` — it'll re-categorize the 52 reset rows AND queue a WhatsApp notification for each non-transfer one. **You'll get ~50 messages in a row.** That's intended for the test, but you may want to do `LIMIT 5` instead via SQL or just connect a fresh sandbox account.
+4. Verify: each notification shows amount + merchant + category + a hint to reply. `whatsapp_messages` table has `direction='outbound'` rows with `status='sent'` (or `'delivered'`/`'read'`). `transactions.last_notified_at` + `notified_amount` populated.
+5. Try a sandbox transaction that posts pending then changes >5% on settle (might not happen naturally in sandbox; the `re-notify` path is wired but easier to verify in real Production once approved).
+
+**Then Phase 4 — WhatsApp in**: Twilio inbound webhook, intent parser, reply matching, photo attachments.
+
+**Phase 1 wrap-up still pending** (whenever ready):
 - **Plaid Dashboard** → Webhook URL → `https://finance-planning-nu.vercel.app/api/plaid/webhook`
 - **cron-job.org** → hourly GET `https://finance-planning-nu.vercel.app/api/cron/sync-fallback` with `Authorization: Bearer <CRON_SECRET>`
 

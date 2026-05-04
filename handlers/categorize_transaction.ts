@@ -102,6 +102,22 @@ export async function categorizeTransactionHandler(payload: {
     }
   }
 
+  // Enqueue WhatsApp notification for non-transfer transactions. Transfers are
+  // silent (decision in 05-whatsapp.md). Idempotency key keys on tx + variant
+  // so re-running categorize won't double-notify.
+  if (!pairResult.paired) {
+    try {
+      await publishJob({
+        type: "send_wa_notification",
+        idempotency_key: `wa-new-${tx.id}`,
+        payload: { transaction_id: tx.id, variant: "new" },
+      });
+    } catch {
+      // QStash unavailable — best-effort. The user can recategorize / hit a
+      // future "re-notify" admin endpoint to resend.
+    }
+  }
+
   return {
     ok: true,
     category: pairResult.paired ? "Transfer" : result.category,

@@ -143,8 +143,17 @@ export async function syncPlaidItem(payload: {
     }
   }
 
-  // 7. Update modified transactions.
+  // 7. Update modified transactions. Capture previous state to decide whether
+  //    to re-notify on pending → posted transitions per the rule in
+  //    docs/04-categorization.md (>5% amount change OR category change).
+  const reNotifyTxIds: string[] = [];
   for (const t of modified) {
+    const { data: prev } = await admin
+      .from("transactions")
+      .select("id, is_pending, amount, notified_amount, last_notified_at, is_transfer")
+      .eq("plaid_transaction_id", t.transaction_id)
+      .maybeSingle();
+
     const { error: modErr } = await admin
       .from("transactions")
       .update({
@@ -161,6 +170,18 @@ export async function syncPlaidItem(payload: {
       throw new Error(
         `sync_plaid_item: update modified failed: ${modErr.message}`,
       );
+    }
+
+    if (!prev || prev.is_transfer) continue;
+
+    const wasPending = prev.is_pending === true;
+    const isPostedNow = t.pending === false;
+    const baseline = prev.notified_amount ?? prev.amount;
+    const amountChangedMaterially =
+      baseline !== 0 && Math.abs(t.amount - baseline) / Math.abs(baseline) > 0.05;
+
+    if (wasPending && isPostedNow && prev.last_notified_at && amountChangedMaterially) {
+      reNotifyTxIds.push(prev.id);
     }
   }
 
@@ -201,6 +222,27 @@ export async function syncPlaidItem(payload: {
         user_id: item.user_id,
         event_type: "qstash_publish_failed",
         payload: { source: "sync_plaid_item", transaction_id: id, error: message },
+      });
+    }
+  }
+
+  // 11. Enqueue re-notify for any transactions that just transitioned from
+  //     pending → posted with a material amount change. Idempotency key
+  //     includes a timestamp bucket so subsequent material updates can fire
+  //     again, but the same sync replay won't.
+  for (const id of reNotifyTxIds) {
+    try {
+      await publishJob({
+        type: "send_wa_notification",
+        idempotency_key: `wa-renotify-${id}-${Math.floor(Date.now() / 60000)}`,
+        payload: { transaction_id: id, variant: "re-notify" },
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "publish failed";
+      await admin.from("app_events").insert({
+        user_id: item.user_id,
+        event_type: "qstash_publish_failed",
+        payload: { source: "sync_plaid_item_renotify", transaction_id: id, error: message },
       });
     }
   }

@@ -3,6 +3,7 @@ import { verifyQstashSignature } from "@/lib/qstash";
 import { syncPlaidItem } from "@/handlers/sync_plaid_item";
 import { categorizeTransactionHandler } from "@/handlers/categorize_transaction";
 import { pairRefundHandler } from "@/handlers/pair_refund";
+import { sendWaNotificationHandler } from "@/handlers/send_wa_notification";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // seconds — sync can be slow on first run
@@ -61,6 +62,15 @@ export async function POST(
       case "pair_refund": {
         const result = await pairRefundHandler(
           parsed.payload as { transaction_id: string },
+        );
+        return Response.json({ ok: true, type, result });
+      }
+      case "send_wa_notification": {
+        const result = await sendWaNotificationHandler(
+          parsed.payload as {
+            transaction_id: string;
+            variant: "new" | "re-notify";
+          },
         );
         return Response.json({ ok: true, type, result });
       }

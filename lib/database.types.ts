@@ -436,6 +436,74 @@ export type Database = {
           },
         ]
       }
+      whatsapp_messages: {
+        Row: {
+          body: string | null
+          created_at: string
+          direction: string
+          error: string | null
+          id: string
+          in_reply_to_sid: string | null
+          in_reply_to_wamid: string | null
+          intent: string | null
+          parsed_payload: Json | null
+          provider_message_id: string | null
+          raw: Json | null
+          related_transaction_id: string | null
+          status: string
+          template_name: string | null
+          twilio_message_sid: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          body?: string | null
+          created_at?: string
+          direction: string
+          error?: string | null
+          id?: string
+          in_reply_to_sid?: string | null
+          in_reply_to_wamid?: string | null
+          intent?: string | null
+          parsed_payload?: Json | null
+          provider_message_id?: string | null
+          raw?: Json | null
+          related_transaction_id?: string | null
+          status?: string
+          template_name?: string | null
+          twilio_message_sid?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          body?: string | null
+          created_at?: string
+          direction?: string
+          error?: string | null
+          id?: string
+          in_reply_to_sid?: string | null
+          in_reply_to_wamid?: string | null
+          intent?: string | null
+          parsed_payload?: Json | null
+          provider_message_id?: string | null
+          raw?: Json | null
+          related_transaction_id?: string | null
+          status?: string
+          template_name?: string | null
+          twilio_message_sid?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "whatsapp_messages_related_transaction_id_fkey"
+            columns: ["related_transaction_id"]
+            isOneToOne: false
+            referencedRelation: "transactions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
