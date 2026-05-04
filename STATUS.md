@@ -9,7 +9,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Current phase
 
-**Phase 0 — Scaffold** (effectively done; pending: Sentry wizard, fill in 2 placeholder env vars)
+**Phase 0 — Scaffold** ✅ done. Ready for Phase 1 (Plaid plumbing).
 
 ---
 
@@ -28,6 +28,8 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
   - Production env vars uploaded to Vercel (16 vars, all 3 environments)
   - First production deploy: <https://finance-planning-9fk8vrdvq-redacted-team.vercel.app>
   - GitHub repo: <https://github.com/mananrvyas/finance-planning> (private)
+  - **Sentry** wired (`@sentry/nextjs` SDK, server/edge/client configs, instrumentation, `/sentry-example-page` for capture testing). `sendDefaultPii: false` set everywhere to honor the no-financial-data-in-logs policy.
+  - `SUPABASE_SERVICE_ROLE_KEY`, `SENTRY_DSN`, `SENTRY_AUTH_TOKEN` filled in `.env.local` and pushed to Vercel for prod/preview/dev.
 
 ---
 
@@ -39,21 +41,13 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Up next
 
-**Two cleanups before Phase 1 starts:**
-
-1. **Fill `SUPABASE_SERVICE_ROLE_KEY`** in `.env.local` and on Vercel (production/preview/development).
-   - Get from Supabase Dashboard → Project → Settings → API → `service_role` (it's hidden behind a "Reveal" button).
-   - On Vercel: `vercel env add SUPABASE_SERVICE_ROLE_KEY production` (paste value), repeat for `preview` and `development`.
-2. **Run the Sentry wizard** (interactive — user runs locally):
-   ```bash
-   cd ~/Desktop/Projects/finance-planning
-   npx @sentry/wizard@latest -i nextjs --saas --org financial-planner --project javascript-nextjs
-   ```
-   Then commit the Sentry config files and redeploy.
-
-**Then Phase 1.1 starts**: enable Postgres extensions + create encryption helpers via Supabase MCP migrations.
+**Phase 1 — Plaid plumbing.** First task: 1.2 — apply migration `0001_extensions_and_helpers.sql` via Supabase MCP (`pgcrypto`, `pg_trgm`, `uuid-ossp` + `store_plaid_item` and `get_plaid_access_token` helper functions).
 
 See [docs/07-build-plan.md §Phase 1](docs/07-build-plan.md) for the full task list.
+
+**Optional smoke tests before moving on (recommended):**
+- Sign up + sign in on the deployed URL (or `npm run dev` locally) to confirm auth round-trips.
+- Hit `/sentry-example-page` (after signing in) → click the "throw" button → confirm an error shows up in Sentry's Issues view.
 
 ---
 
@@ -77,6 +71,7 @@ See [docs/07-build-plan.md §Phase 1](docs/07-build-plan.md) for the full task l
 - 2026-05-03 — **Store every Plaid response verbatim**: `plaid_webhooks.payload` (jsonb) for inbound, `transactions.raw` (jsonb) per-row, `app_events` for the full sync response.
 - 2026-05-03 — **Transfer pairing is synchronous** at the end of `categorize_transaction` to avoid the WA-notification race. `pair_refund` stays async.
 - 2026-05-03 — **Next.js 16 deprecates `middleware.ts` → `proxy.ts`.** Renamed the file and the exported function (`middleware` → `proxy`). All Supabase-SSR session-refresh logic stayed identical.
+- 2026-05-03 — **Sentry: `sendDefaultPii: false`** everywhere. Wizard defaults this to true; we override to enforce the no-financial-data-in-logs policy (docs/01-architecture.md §Logging hygiene).
 
 ---
 
