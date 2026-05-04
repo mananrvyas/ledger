@@ -1,6 +1,7 @@
 import { Landmark, AlertTriangle, RefreshCw } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import { PlaidLinkButton } from "@/components/plaid/plaid-link-button";
+import { DisconnectButton } from "@/components/plaid/disconnect-button";
 import {
   formatCurrency,
   formatRelative,
@@ -132,6 +133,12 @@ export default async function AccountsPage() {
                       label="Reconnect"
                     />
                   ) : null}
+                  <DisconnectButton
+                    plaidItemId={item.id}
+                    institutionName={
+                      item.institution_name ?? "this institution"
+                    }
+                  />
                   <span
                     className="font-mono text-[10px] tracking-[0.14em] text-muted-foreground/40"
                     title="Item index"
