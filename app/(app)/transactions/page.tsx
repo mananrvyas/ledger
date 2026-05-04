@@ -120,12 +120,13 @@ export default async function TransactionsPage() {
         </section>
       ) : (
         <section className="reveal reveal-2 overflow-hidden rounded-xl border border-border bg-card">
-          <div className="grid grid-cols-[80px_1fr_180px_140px_140px] items-center gap-4 border-b border-hairline px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70">
+          <div className="grid grid-cols-[80px_1fr_180px_140px_140px_28px] items-center gap-4 border-b border-hairline px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70">
             <span>Date</span>
             <span>Merchant</span>
             <span>Category</span>
             <span>Account</span>
             <span className="text-right">Amount</span>
+            <span className="sr-only">Actions</span>
           </div>
           <ul className="divide-y divide-hairline">
             {rows.map((t) => {
@@ -152,7 +153,7 @@ export default async function TransactionsPage() {
                 <li
                   key={t.id}
                   className={cn(
-                    "grid grid-cols-[80px_1fr_180px_140px_140px] items-baseline gap-4 px-6 py-3 transition-colors hover:bg-foreground/[0.025]",
+                    "group grid grid-cols-[80px_1fr_180px_140px_140px_28px] items-baseline gap-4 px-6 py-3 transition-colors hover:bg-foreground/[0.025]",
                     t.excluded_from_stats && "opacity-55",
                   )}
                 >
@@ -248,6 +249,11 @@ export default async function TransactionsPage() {
                         of {formatCurrency(Math.abs(t.amount))}
                       </p>
                     ) : null}
+                  </div>
+
+                  {/* Per-row test WA — visible but faint, brightens on row hover */}
+                  <div className="flex items-center justify-end self-center opacity-30 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                    <TestWhatsAppButton transactionId={t.id} compact />
                   </div>
                 </li>
               );

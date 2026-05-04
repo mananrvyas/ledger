@@ -6,19 +6,28 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 
 /**
- * Test-fire a single WhatsApp notification for one transaction. Used to
- * verify Twilio creds + sandbox pairing without flooding your phone with
- * the full backfill. The route picks the most recent non-transfer tx if no
- * id is passed.
+ * Test-fire a single WhatsApp notification for a transaction. Used to verify
+ * Twilio + sandbox pairing without flooding your phone with the full backfill.
+ *
+ * Two visual variants:
+ *   - default (header) — labeled "test wa" ghost button. With no `transactionId`,
+ *     the API picks the user's most recent non-transfer tx.
+ *   - compact (row)    — icon-only ghost button sized for inline use in a row.
+ *     Always passes the row's `transactionId` so any tx is testable in one click.
  */
 export function TestWhatsAppButton({
   transactionId,
+  compact = false,
 }: {
   transactionId?: string;
+  compact?: boolean;
 }) {
   const [pending, startTransition] = useTransition();
 
-  function run() {
+  function run(e?: React.MouseEvent) {
+    // In compact mode the button sits inside a transaction row; without
+    // stopPropagation a click could bubble to a future row-level handler.
+    e?.stopPropagation();
     startTransition(async () => {
       const toastId = toast.loading("Sending one test message…");
       try {
@@ -46,6 +55,27 @@ export function TestWhatsAppButton({
         toast.error(`Test failed: ${message}`, { id: toastId });
       }
     });
+  }
+
+  if (compact) {
+    return (
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-xs"
+        disabled={pending}
+        onClick={run}
+        title="Send test WhatsApp for this transaction"
+        className="text-muted-foreground/40 hover:text-foreground"
+      >
+        {pending ? (
+          <Loader2 className="size-3 animate-spin" />
+        ) : (
+          <MessageCircle className="size-3" strokeWidth={1.6} />
+        )}
+        <span className="sr-only">Send test WhatsApp for this transaction</span>
+      </Button>
+    );
   }
 
   return (
