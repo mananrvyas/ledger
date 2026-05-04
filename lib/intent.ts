@@ -3,72 +3,61 @@ import { z } from "zod";
 import { callClaudeWithSchema } from "@/lib/anthropic";
 
 /**
- * WhatsApp reply intent parser. One Claude Haiku call per inbound text body.
+ * WhatsApp reply intent parser.
  *
- * Each reply targets ONE transaction (matching is upstream — see
- * `handlers/parse_wa_reply.ts`). The parser maps free-text English (plus
- * common shorthand: "1/3", "20%", "$8") to a typed Intent the worker can
- * apply directly to the DB.
+ * One Claude Haiku call per inbound text body; the model returns a single
+ * Action object with any combination of optional fields. A reply like
+ * "categorize correctly and split half and half" can recategorize AND split
+ * in one shot — we don't force the user to pick one operation.
  *
- * Constraints baked into the prompt:
- *   - new_category MUST come from the user's exact category list
- *     (we then validate again in code — Claude can drift on rare prompts).
- *   - One intent per reply. If user says "split 1/3 and add a note", the
- *     dominant action wins (split) and the rest goes in split_raw_input.
+ * Each field maps directly to a column update the handler can apply
+ * independently. `unclear` is set ONLY when nothing else was actionable.
  */
 
 // ---------------------------------------------------------------------------
-// Schema — discriminated union of intents
+// Schema — single object with optional action fields
 // ---------------------------------------------------------------------------
 
-const RecategorizeSchema = z.object({
-  intent: z.literal("recategorize"),
+const RecategorizeAction = z.object({
   new_category: z
     .string()
     .describe("MUST be exactly one of the names in the provided category list"),
 });
 
-const SplitSchema = z.object({
-  intent: z.literal("split"),
+const SplitAction = z.object({
   split_type: z.enum(["percent", "fixed", "ratio"]),
   split_value: z
     .number()
     .describe(
-      "For percent: 0-100 (so 20% = 20). For fixed: dollar amount. For ratio: fraction 0-1 (so 1/3 = 0.3333).",
+      "percent: 0-100 (so 20% = 20). fixed: dollar amount. ratio: fraction 0-1 (so 1/3 = 0.3333).",
     ),
   split_raw_input: z
     .string()
-    .describe("The user's original phrasing, preserved for audit"),
+    .describe("The user's original phrasing for this split, preserved for audit"),
 });
 
-const NoteSchema = z.object({
-  intent: z.literal("note"),
-  note: z.string().describe("Free-form note to attach to the transaction"),
+/**
+ * The single command object Claude returns. Any combination of fields is
+ * legal. If NO actionable fields are present, `unclear` carries the reason.
+ */
+const ActionSchema = z.object({
+  recategorize: RecategorizeAction.nullable(),
+  split: SplitAction.nullable(),
+  note: z.string().nullable().describe("Free-form note to attach, if any"),
+  /**
+   * Tri-state: true = exclude from stats, false = include back in stats,
+   * null = no change to inclusion.
+   */
+  exclude_set: z.boolean().nullable(),
+  unclear: z
+    .string()
+    .nullable()
+    .describe(
+      "Set ONLY when no other field is actionable. One short sentence on what was unclear.",
+    ),
 });
 
-const ExcludeSchema = z.object({
-  intent: z.literal("exclude"),
-});
-
-const IncludeSchema = z.object({
-  intent: z.literal("include"),
-});
-
-const UnknownSchema = z.object({
-  intent: z.literal("unknown"),
-  reason: z.string().describe("One short sentence explaining what was unclear"),
-});
-
-const IntentSchema = z.discriminatedUnion("intent", [
-  RecategorizeSchema,
-  SplitSchema,
-  NoteSchema,
-  ExcludeSchema,
-  IncludeSchema,
-  UnknownSchema,
-]);
-
-export type Intent = z.infer<typeof IntentSchema>;
+export type Action = z.infer<typeof ActionSchema>;
 
 // ---------------------------------------------------------------------------
 // Prompt
@@ -76,69 +65,67 @@ export type Intent = z.infer<typeof IntentSchema>;
 
 const INTENT_SYSTEM_PROMPT = `You parse personal-finance edit commands sent via WhatsApp.
 
-The user is editing ONE specific transaction (provided in context).
-Output VALID JSON only. No prose.
+The user is editing ONE specific transaction (provided in context). They may ask for MULTIPLE changes in one message — do all of them.
 
-Recognize these intents:
+Output VALID JSON matching the provided schema. No prose.
 
-- "recategorize" — user wants a different category.
-  Output: { intent: "recategorize", new_category: "<exact name from list>" }
-  Examples: "this is groceries", "actually transit", "coffee not eating out"
+Set the fields that apply, leave the rest as null:
 
-- "split" — user is paying only part of the bill.
-  Output: { intent: "split", split_type: "percent" | "fixed" | "ratio", split_value: <number>, split_raw_input: "<original text>" }
+- recategorize: { new_category } — pick the EXACT category name from the provided list. Examples: "this is travel", "actually groceries", "no, coffee".
+
+- split: { split_type, split_value, split_raw_input } — user is paying only part.
   - "1/3" or "1 of 3" → ratio, 0.3333
   - "20%" or "20 percent" → percent, 20
   - "$8" or "8 dollars" → fixed, 8.00
-  - "half" → ratio, 0.5
+  - "half" or "half and half" or "50/50" → ratio, 0.5
   - "split with 2 friends" (3 people total) → ratio, 0.3333
+  Always preserve the user's exact phrasing in split_raw_input.
 
-- "note" — user wants to add free-form context, no other change.
-  Output: { intent: "note", note: "<the note text>" }
-  Examples: "with sarah and mike", "birthday gift for mom"
+- note: free-form context the user wants saved with the transaction.
+  Examples: "with sarah and mike", "birthday gift for mom", "annual subscription".
+  Do NOT auto-generate a note from a recategorize/split command — only set this when the user EXPLICITLY adds context that doesn't fit the other fields.
 
-- "exclude" — user wants the transaction excluded from stats.
-  Output: { intent: "exclude" }
-  Phrases: "ignore this", "not mine", "don't count this", "exclude", "skip"
+- exclude_set: true if user wants the tx excluded from stats ("ignore this", "not mine", "don't count this", "skip"). false if they want to include it back ("include this", "count this again"). null otherwise.
 
-- "include" — reverse of exclude.
-  Output: { intent: "include" }
-  Phrases: "include this", "count this again", "back in"
-
-- "unknown" — cannot determine.
-  Output: { intent: "unknown", reason: "<one sentence>" }
+- unclear: set this string ONLY if NONE of the above apply. Examples: bare acks like "yes", "ok", "lol", or genuinely ambiguous text. If you set unclear, ALL other fields must be null.
 
 Rules:
-- new_category MUST be EXACTLY one of the names in the provided list (case-sensitive). If the user names something not on the list, pick the closest fit; if nothing fits, use "Other".
-- For split, prefer the user's exact phrasing in split_raw_input.
-- Don't combine intents. If user says "split 1/3 and add a note", choose the dominant action (split). Put the rest of the text in split_raw_input.
-- If reply is just "yes", "ok", "thanks", "lol", or otherwise affirms/dismisses — return "unknown" with reason "ack_only".`;
+- Multiple actions in one reply are FINE. "categorize as travel and split half" → recategorize + split, both set.
+- new_category MUST be EXACTLY one of the names in the provided list (case-sensitive). If user names something not on the list, pick the closest fit; if nothing fits, use "Other".
+- If a single message contains a recategorize hint AND a split, do both — don't drop one.
+- Never invent fields or values. Leave fields null when nothing in the user's text supports them.`;
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 export type ParseIntentParams = {
-  /** The text of the user's WhatsApp reply. */
   body: string;
-  /** Context for the LLM: the transaction being edited. */
   transaction: {
     amount: number;
     merchant: string;
     current_category: string | null;
   };
-  /** The exhaustive list of category names the user has. */
   userCategories: string[];
 };
 
 export type ParseIntentResult =
-  | { ok: true; intent: Intent }
+  | { ok: true; action: Action }
   | { ok: false; reason: "parse_failed" | "refusal" | "max_tokens" };
 
+/** True iff the action contains at least one applicable field. */
+export function hasActionableField(a: Action): boolean {
+  return (
+    a.recategorize != null ||
+    a.split != null ||
+    (a.note != null && a.note.trim().length > 0) ||
+    a.exclude_set != null
+  );
+}
+
 /**
- * Run the intent parser. Throws on transient API errors so the QStash
- * retry kicks in. Returns `{ ok: false }` only on logical failures
- * (Claude refused, malformed output, hit max_tokens).
+ * Run the intent parser. Throws on transient API errors (let QStash retry).
+ * Returns `{ ok: false }` only on logical LLM failures.
  */
 export async function parseWhatsAppIntent(
   params: ParseIntentParams,
@@ -155,8 +142,8 @@ export async function parseWhatsAppIntent(
   const response = await callClaudeWithSchema({
     system: INTENT_SYSTEM_PROMPT,
     user: userPrompt,
-    schema: IntentSchema,
-    maxTokens: 256,
+    schema: ActionSchema,
+    maxTokens: 384,
   });
 
   if (!response.ok) {
@@ -165,20 +152,16 @@ export async function parseWhatsAppIntent(
 
   // Defense in depth: validate that recategorize.new_category is on the list.
   // If Claude drifts (rare), coerce to "Other" rather than corrupting state.
-  const intent = response.value;
-  if (intent.intent === "recategorize") {
-    if (!userCategories.includes(intent.new_category)) {
-      return {
-        ok: true,
-        intent: {
-          intent: "recategorize",
-          new_category: userCategories.includes("Other")
-            ? "Other"
-            : userCategories[0],
-        },
+  const action = response.value;
+  if (action.recategorize) {
+    if (!userCategories.includes(action.recategorize.new_category)) {
+      action.recategorize = {
+        new_category: userCategories.includes("Other")
+          ? "Other"
+          : userCategories[0],
       };
     }
   }
 
-  return { ok: true, intent };
+  return { ok: true, action };
 }

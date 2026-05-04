@@ -2,27 +2,35 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWhatsAppMessage } from "@/lib/twilio";
-import { parseWhatsAppIntent, type Intent } from "@/lib/intent";
+import {
+  parseWhatsAppIntent,
+  hasActionableField,
+  type Action,
+} from "@/lib/intent";
 import { upsertCategoryRule } from "@/lib/categorize";
 import { formatCurrency } from "@/lib/format";
-import type { Json } from "@/lib/database.types";
+import type { Json, TablesUpdate } from "@/lib/database.types";
 
 /**
  * Inbound WhatsApp reply worker. Pipeline:
- *   1. Load the inbound whatsapp_messages row (idempotent — skip if intent set).
+ *   1. Load inbound whatsapp_messages row (idempotent — skip if intent set).
  *   2. Resolve target transaction:
- *        a. quoted reply  → look up outbound row by Twilio's OriginalRepliedMessageSid
- *        b. fallback      → user's most-recent notified, un-edited tx within 60 min
- *        c. otherwise     → ask "which transaction?" and exit
+ *        a. quoted reply → look up outbound row by Twilio's OriginalRepliedMessageSid
+ *        b. fallback     → MOST RECENT outbound tx_notification's related_transaction_id,
+ *                          inside a 60-min window. No "exactly one" gate, no
+ *                          last_user_edit_at filter — the user told us they
+ *                          want stickiness on the latest ping.
+ *        c. otherwise    → ask "which transaction?" and exit
  *   3. Download any media (Twilio basic auth) → upload to Storage → insert
  *      transaction_attachments rows.
- *   4. If body is non-empty: run the intent parser.
- *   5. Apply the intent (DB writes: user_category / split_* / notes / excluded_from_stats).
- *   6. Send a confirmation message via Twilio.
+ *   4. Parse text body (if non-empty) into a multi-field Action.
+ *   5. Apply EACH set field on the Action (recategorize, split, note,
+ *      exclude_set) — they compose. Stitch a single confirmation message.
+ *   6. Send the confirmation via Twilio.
  *   7. Stamp the inbound row with intent + parsed_payload + related_transaction_id.
  *
- * Failure model: throws on transient (network/Twilio/Anthropic) so QStash retries;
- * returns `{ skipped: true }` on idempotent re-runs and benign no-ops.
+ * Failure model: throws on transient (network/Twilio/Anthropic) so QStash
+ * retries; returns `{ skipped: true }` on idempotent re-runs and benign no-ops.
  */
 
 const RECENT_WINDOW_MIN = 60;
@@ -34,7 +42,7 @@ export type ParseWaReplyResult =
       ok: true;
       skipped?: false;
       transaction_id: string | null;
-      intent: Intent["intent"];
+      intent_label: string;
       attachments_added: number;
     };
 
@@ -67,6 +75,7 @@ export async function parseWaReplyHandler(payload: {
   // 2. Resolve target transaction
   // ---------------------------------------------------------------------
   let targetTxId: string | null = null;
+  let matchSource: "quoted" | "recent" | null = null;
 
   // 2a. Quoted-reply path
   if (inbound.in_reply_to_sid) {
@@ -78,23 +87,31 @@ export async function parseWaReplyHandler(payload: {
       .maybeSingle();
     if (orig?.related_transaction_id) {
       targetTxId = orig.related_transaction_id;
+      matchSource = "quoted";
     }
   }
 
-  // 2b. Recent un-edited fallback
+  // 2b. No quote → most recent notification's tx, within 60 min.
+  // We look at the outbound `tx_notification` log directly (rather than
+  // transactions.last_notified_at) so we always glue the reply to the
+  // SAME transaction the user just saw on their phone, even if that tx
+  // was edited via web in between, or another tx was edited after.
   if (!targetTxId) {
     const cutoff = new Date(Date.now() - RECENT_WINDOW_MIN * 60_000).toISOString();
-    const { data: recent } = await admin
-      .from("transactions")
-      .select("id, last_notified_at")
+    const { data: latest } = await admin
+      .from("whatsapp_messages")
+      .select("related_transaction_id, created_at")
       .eq("user_id", userId)
-      .is("deleted_at", null)
-      .is("last_user_edit_at", null)
-      .gte("last_notified_at", cutoff)
-      .order("last_notified_at", { ascending: false })
-      .limit(2);
-    if (recent && recent.length === 1) {
-      targetTxId = recent[0].id;
+      .eq("direction", "outbound")
+      .eq("template_name", "tx_notification")
+      .not("related_transaction_id", "is", null)
+      .gte("created_at", cutoff)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (latest?.related_transaction_id) {
+      targetTxId = latest.related_transaction_id;
+      matchSource = "recent";
     }
   }
 
@@ -115,7 +132,7 @@ export async function parseWaReplyHandler(payload: {
     return {
       ok: true,
       transaction_id: null,
-      intent: "unknown",
+      intent_label: "unknown",
       attachments_added: 0,
     };
   }
@@ -144,9 +161,8 @@ export async function parseWaReplyHandler(payload: {
   for (const item of mediaItems) {
     try {
       const file = await downloadTwilioMedia(item.url);
-      if (!file) continue; // already logged inside
+      if (!file) continue;
 
-      // Validate content type — images and PDFs only.
       const mime = item.contentType || file.contentType || "application/octet-stream";
       if (!isAllowedAttachmentType(mime)) {
         await admin.from("app_events").insert({
@@ -179,8 +195,6 @@ export async function parseWaReplyHandler(payload: {
           upsert: false,
         });
       if (uploadErr) {
-        // Storage 409 = already exists (collision on the UUID — astronomically rare).
-        // Either way, log and move on; don't break the whole reply over one image.
         await admin.from("app_events").insert({
           user_id: userId,
           event_type: "wa_attachment_storage_error",
@@ -200,8 +214,6 @@ export async function parseWaReplyHandler(payload: {
       });
       attachmentsAdded += 1;
     } catch (err) {
-      // Media download failure is transient — but we don't want to block
-      // intent application. Log and keep going.
       const message = err instanceof Error ? err.message : "media_failed";
       await admin.from("app_events").insert({
         user_id: userId,
@@ -214,13 +226,10 @@ export async function parseWaReplyHandler(payload: {
   // ---------------------------------------------------------------------
   // 4. Parse intent (only if there's body text)
   // ---------------------------------------------------------------------
-  let intent: Intent;
-  if (!body) {
-    intent =
-      attachmentsAdded > 0
-        ? { intent: "note", note: "(receipt photo attached)" }
-        : { intent: "unknown", reason: "empty_body_no_media" };
-  } else {
+  let action: Action | null = null;
+  let llmReason: string | null = null;
+
+  if (body) {
     const userCategories = await loadUserCategories(admin);
     const result = await parseWhatsAppIntent({
       body,
@@ -233,97 +242,114 @@ export async function parseWaReplyHandler(payload: {
     });
 
     if (!result.ok) {
-      // Logical LLM failure — degrade to unknown rather than retrying forever.
-      intent = { intent: "unknown", reason: `claude_${result.reason}` };
+      llmReason = `claude_${result.reason}`;
     } else {
-      intent = result.intent;
+      action = result.action;
     }
   }
 
   // ---------------------------------------------------------------------
-  // 5. Apply intent
+  // 5. Apply each present field on the Action
   // ---------------------------------------------------------------------
-  let confirmation: string;
-  switch (intent.intent) {
-    case "recategorize": {
-      await admin
-        .from("transactions")
-        .update({
-          user_category: intent.new_category,
-          category_source: "manual",
-          last_user_edit_at: new Date().toISOString(),
-        })
-        .eq("id", tx.id);
+  const editedAt = new Date().toISOString();
+  const txUpdate: TablesUpdate<"transactions"> = {};
+  const confirmationParts: string[] = [];
+  const appliedLabels: string[] = [];
+
+  if (attachmentsAdded > 0) {
+    confirmationParts.push(
+      `📎 Photo attached to ${merchant} ${formatCurrency(Math.abs(tx.amount))}.`,
+    );
+    appliedLabels.push("photo");
+  }
+
+  if (action) {
+    if (action.recategorize) {
+      txUpdate.user_category = action.recategorize.new_category;
+      txUpdate.category_source = "manual";
+      txUpdate.last_user_edit_at = editedAt;
+      // Learn the rule asynchronously — handler awaits it after the main update.
+      confirmationParts.push(
+        `✅ Recategorized to ${action.recategorize.new_category}.`,
+      );
+      appliedLabels.push("recategorize");
+    }
+
+    if (action.split) {
+      // effective_amount is a generated column; setting split_* is enough.
+      txUpdate.split_type = action.split.split_type;
+      txUpdate.split_value = action.split.split_value;
+      txUpdate.split_raw_input = action.split.split_raw_input;
+      txUpdate.last_user_edit_at = editedAt;
+      const total = Math.abs(tx.amount);
+      const share =
+        action.split.split_type === "percent"
+          ? total * (action.split.split_value / 100)
+          : action.split.split_type === "ratio"
+            ? total * action.split.split_value
+            : action.split.split_value;
+      confirmationParts.push(
+        `✂️ Split — your share: ${formatCurrency(share)} (${action.split.split_raw_input} of ${formatCurrency(total)}).`,
+      );
+      appliedLabels.push("split");
+    }
+
+    if (action.note != null && action.note.trim().length > 0) {
+      txUpdate.notes = action.note;
+      txUpdate.last_user_edit_at = editedAt;
+      confirmationParts.push("📝 Note saved.");
+      appliedLabels.push("note");
+    }
+
+    if (action.exclude_set != null) {
+      txUpdate.excluded_from_stats = action.exclude_set;
+      txUpdate.last_user_edit_at = editedAt;
+      confirmationParts.push(
+        action.exclude_set ? "🚫 Excluded from stats." : "↩️ Back in stats.",
+      );
+      appliedLabels.push(action.exclude_set ? "exclude" : "include");
+    }
+  }
+
+  // Persist tx changes (one update for all fields).
+  if (Object.keys(txUpdate).length > 0) {
+    await admin.from("transactions").update(txUpdate).eq("id", tx.id);
+    if (action?.recategorize) {
       await upsertCategoryRule({
         admin,
         userId,
         merchantName: tx.merchant_name ?? tx.name,
-        categoryName: intent.new_category,
+        categoryName: action.recategorize.new_category,
       });
-      confirmation = `✅ Recategorized to ${intent.new_category}.`;
-      break;
-    }
-    case "split": {
-      // Note: effective_amount is a generated column; setting split_* is enough.
-      await admin
-        .from("transactions")
-        .update({
-          split_type: intent.split_type,
-          split_value: intent.split_value,
-          split_raw_input: intent.split_raw_input,
-          last_user_edit_at: new Date().toISOString(),
-        })
-        .eq("id", tx.id);
-      confirmation = formatSplitConfirmation(intent, tx.amount);
-      break;
-    }
-    case "note": {
-      await admin
-        .from("transactions")
-        .update({
-          notes: intent.note,
-          last_user_edit_at: new Date().toISOString(),
-        })
-        .eq("id", tx.id);
-      confirmation = "✅ Note saved.";
-      break;
-    }
-    case "exclude": {
-      await admin
-        .from("transactions")
-        .update({
-          excluded_from_stats: true,
-          last_user_edit_at: new Date().toISOString(),
-        })
-        .eq("id", tx.id);
-      confirmation = "🚫 Excluded from stats.";
-      break;
-    }
-    case "include": {
-      await admin
-        .from("transactions")
-        .update({
-          excluded_from_stats: false,
-          last_user_edit_at: new Date().toISOString(),
-        })
-        .eq("id", tx.id);
-      confirmation = "↩️ Back in stats.";
-      break;
-    }
-    case "unknown":
-    default: {
-      confirmation =
-        attachmentsAdded > 0
-          ? `✅ Photo attached to ${merchant} ${formatCurrency(Math.abs(tx.amount))}.`
-          : `🤔 Didn't catch that. Try: "groceries", "split 1/3", "ignore", or send a photo.`;
-      break;
     }
   }
 
-  // Prepend an attachment ack if media came in alongside an intent.
-  if (attachmentsAdded > 0 && intent.intent !== "unknown" && intent.intent !== "note") {
-    confirmation = `✅ Photo attached. ${confirmation.replace(/^✅\s*/, "")}`;
+  // If nothing was applied, ask for clarification (unless we just attached a photo).
+  if (confirmationParts.length === 0) {
+    if (llmReason) {
+      confirmationParts.push(
+        `🤔 Didn't catch that. Try: "groceries", "split 1/3", "ignore", or send a photo.`,
+      );
+      appliedLabels.push("unclear_llm");
+    } else if (action?.unclear) {
+      confirmationParts.push(
+        `🤔 Didn't catch that. Try: "groceries", "split 1/3", "ignore", or send a photo.`,
+      );
+      appliedLabels.push("unclear");
+    } else if (!body) {
+      // Silent edge case: no body, no media — nothing to do.
+      confirmationParts.push("(empty message — nothing to do)");
+      appliedLabels.push("empty");
+    } else {
+      confirmationParts.push(
+        `🤔 Didn't catch that. Try: "groceries", "split 1/3", "ignore", or send a photo.`,
+      );
+      appliedLabels.push("unclear");
+    }
   }
+
+  const confirmation = confirmationParts.join("\n");
+  const intentLabel = appliedLabels.length > 0 ? appliedLabels.join("+") : "unknown";
 
   // ---------------------------------------------------------------------
   // 6. Send confirmation
@@ -338,11 +364,19 @@ export async function parseWaReplyHandler(payload: {
   // ---------------------------------------------------------------------
   // 7. Stamp inbound row
   // ---------------------------------------------------------------------
+  const parsedPayload: Record<string, unknown> = {
+    intent: intentLabel,
+    match_source: matchSource,
+    attachments_added: attachmentsAdded,
+  };
+  if (action) parsedPayload.action = action;
+  if (llmReason) parsedPayload.llm_reason = llmReason;
+
   await admin
     .from("whatsapp_messages")
     .update({
-      intent: intent.intent,
-      parsed_payload: intent as unknown as Json,
+      intent: intentLabel,
+      parsed_payload: parsedPayload as Json,
       related_transaction_id: tx.id,
     })
     .eq("id", inbound.id);
@@ -350,30 +384,17 @@ export async function parseWaReplyHandler(payload: {
   return {
     ok: true,
     transaction_id: tx.id,
-    intent: intent.intent,
+    intent_label: intentLabel,
     attachments_added: attachmentsAdded,
   };
 }
 
+// Keep `hasActionableField` referenced so the import tree is honest.
+void hasActionableField;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatSplitConfirmation(
-  intent: Extract<Intent, { intent: "split" }>,
-  amount: number,
-): string {
-  const total = Math.abs(amount);
-  let share: number;
-  if (intent.split_type === "percent") {
-    share = total * (intent.split_value / 100);
-  } else if (intent.split_type === "ratio") {
-    share = total * intent.split_value;
-  } else {
-    share = intent.split_value;
-  }
-  return `✅ Split — your share: ${formatCurrency(share)} (${intent.split_raw_input} of ${formatCurrency(total)}).`;
-}
 
 type MediaItem = { url: string; contentType: string | null };
 
@@ -406,8 +427,6 @@ async function downloadTwilioMedia(
     throw new Error("TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN not set");
   }
   const auth = Buffer.from(`${sid}:${token}`).toString("base64");
-  // Twilio media URLs return a 302 to the actual asset on S3. Fetch follows
-  // redirects by default; the credentials are only needed on the first hop.
   const res = await fetch(url, {
     headers: { Authorization: `Basic ${auth}` },
     redirect: "follow",
@@ -433,7 +452,6 @@ function extensionForMime(mime: string): string {
   if (mime === "image/webp") return "webp";
   if (mime === "image/heic") return "heic";
   if (mime === "application/pdf") return "pdf";
-  // Fallback: take the part after the slash, strip params
   const after = mime.split("/")[1] ?? "bin";
   return after.split(";")[0]!.replace(/[^a-z0-9]/gi, "") || "bin";
 }
@@ -445,10 +463,7 @@ async function loadUserCategories(
     .from("categories")
     .select("name, sort_order")
     .order("sort_order", { ascending: true });
-  if (!data || data.length === 0) {
-    // Last-ditch fallback so the LLM still has something to choose from.
-    return ["Other"];
-  }
+  if (!data || data.length === 0) return ["Other"];
   return data.map((c) => c.name);
 }
 
