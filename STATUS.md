@@ -9,7 +9,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Current phase
 
-**Phase 1 — Plaid plumbing** — code complete; pending external config (Plaid webhook URL, cron-job.org) + first bank linking.
+**Phase 2 — Categorization** ✅ done. Ready for Phase 3 (WhatsApp out).
 
 ---
 
@@ -40,6 +40,19 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
   - Components: `components/plaid/plaid-link-button.tsx` (with reconnect mode).
   - Pages: `/accounts` (institutions + balances), `/transactions` (raw list with pending pill + credit highlight).
   - Vercel `NEXT_PUBLIC_APP_URL` / `APP_URL` updated to canonical production URL `https://finance-planning-nu.vercel.app`.
+- 2026-05-03 — **Phase 2** (categorization):
+  - Migrations 0004 (categorization columns + categories + category_rules tables, RLS, generated `effective_amount` STORED column) and 0005 (19 default categories seed) applied via Supabase MCP. TypeScript types regenerated.
+  - `lib/plaid-category-map.ts` — Plaid PFC → our 19-category taxonomy with detail-level overrides.
+  - `lib/anthropic.ts` — Claude Haiku 4.5 client + `callClaudeWithSchema` helper using `messages.parse` + `zodOutputFormat` + `cache_control` on system prompt.
+  - `lib/categorize.ts` — three-tier waterfall (Plaid → rules → Claude), `pairTransferIfMatch` (synchronous), `upsertCategoryRule`, batch classifier.
+  - `handlers/categorize_transaction.ts` + `handlers/pair_refund.ts` — idempotent QStash workers.
+  - `sync_plaid_item` now captures Plaid's category fields and enqueues `categorize_transaction` per new tx.
+  - `/api/qstash/job/[type]` routes the new job types.
+  - `/api/admin/backfill-categorize` (auth-gated) — one-shot enqueue for existing rows; `?force=true` to overwrite.
+  - `/api/transactions/[id]` PATCH — RLS-bound edit; upserts `category_rules` on category change.
+  - `components/app/category-pill.tsx` + `components/app/category-picker.tsx` — Base UI Popover + cmdk Command; toast + `router.refresh()` after PATCH.
+  - `/transactions` page: 5-col grid with inline category picker, pending / transfer / refund / split indicators, dimmed row when excluded.
+  - shadcn primitives added: popover, command, dialog, textarea, input-group.
 
 ---
 
@@ -51,28 +64,18 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Up next
 
-**Phase 1 wrap-up — three external configurations + a smoke test.**
+**Phase 2 smoke tests** (do once after the deploy lands):
 
-Production URL: <https://finance-planning-nu.vercel.app>
+1. POST `/api/admin/backfill-categorize` (signed in) to categorize all existing sandbox transactions. Watch Vercel logs for the worker invocations.
+2. Open `/transactions` — every row should show a category pill. Mostly Plaid-sourced (sandbox data has confident PFCs), some AI for ambiguous merchants.
+3. Click a category pill → pick a different one → confirm: row updates, toast appears, `category_rules` table has a new row keyed on the normalized merchant. Sync again — next transaction from that merchant should use the rule.
+4. Trigger a sandbox transfer (`/sandbox/item/fire_webhook` or via Plaid Link's "Test Transfer" UI if available) — both legs should auto-pair as Transfer.
 
-1. **Plaid Dashboard** → Team Settings → API → Allowed redirect URIs / Webhooks. Set the production webhook URL:
-   ```
-   https://finance-planning-nu.vercel.app/api/plaid/webhook
-   ```
-2. **cron-job.org** — create a job:
-   - URL: `https://finance-planning-nu.vercel.app/api/cron/sync-fallback`
-   - Method: GET
-   - Schedule: every 60 minutes
-   - Header: `Authorization: Bearer <CRON_SECRET>` (the value in `.env.local`)
-3. **Try it**: log in to the deployed app → /accounts → "Connect a bank" → connect Amex (or any). Verify:
-   - The `plaid_items` table has a row with an encrypted `access_token_enc` (bytea, not plaintext).
-   - The `accounts` table has rows.
-   - Within ~30s, the `transactions` table starts populating.
-   - `app_events` has a `plaid_sync_response` row with the counts.
+**Then Phase 3 — WhatsApp out**: Twilio sandbox setup, `whatsapp_messages` table, `send_wa_notification` worker, hook into end of `categorize_transaction`.
 
-If any step fails, check Vercel function logs and Supabase logs.
-
-**Then Phase 2 — Categorization** (default categories, waterfall, transfer/refund pairing).
+**Phase 1 wrap-up still pending** (do these whenever ready):
+- **Plaid Dashboard** → Webhook URL → `https://finance-planning-nu.vercel.app/api/plaid/webhook`
+- **cron-job.org** → hourly GET `https://finance-planning-nu.vercel.app/api/cron/sync-fallback` with `Authorization: Bearer <CRON_SECRET>`
 
 ---
 
