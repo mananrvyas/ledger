@@ -52,6 +52,12 @@ export async function POST(_request: NextRequest) {
       webhook: `${getAppUrl()}/api/plaid/webhook`,
       // For "update mode" (reconnect after ITEM_LOGIN_REQUIRED):
       access_token: accessToken,
+      // Ask Plaid for the maximum history (24 months). Default is 90 days.
+      // Each bank caps this independently — Chase typically gives 24 months,
+      // smaller institutions sometimes only 12 or 6.
+      transactions: {
+        days_requested: 730,
+      },
     });
 
     return Response.json({ link_token: linkResp.data.link_token });

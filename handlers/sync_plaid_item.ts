@@ -9,12 +9,14 @@ import type { Json } from "@/lib/database.types";
 import { getDecryptedAccessToken } from "@/lib/encryption";
 import { getPlaidClient } from "@/lib/plaid";
 import { publishJob } from "@/lib/qstash";
+import { normalizeMerchant } from "@/lib/plaid-category-map";
 
 export type SyncResult = {
   added: number;
   modified: number;
   removed: number;
   balances_updated?: number;
+  carried_over?: number;
   skipped?: boolean;
   reason?: string;
 };
@@ -194,9 +196,105 @@ export async function syncPlaidItem(payload: {
     }
   }
 
-  // 8. Soft-delete removed transactions.
+  // 8. Soft-delete removed transactions, carrying over user state to a
+  //    replacement row when one exists. Pending → posted on Chase (and
+  //    others) often re-issues a different plaid_transaction_id: Plaid
+  //    `removes` the pending row and `adds` a fresh posted row in the same
+  //    sync. Without carry-over, the user's manual edits (split, exclude,
+  //    notes, last_notified_at) get stranded on the soft-deleted predecessor
+  //    and the new row pings them again.
+  let carriedOverCount = 0;
   for (const r of removed) {
     if (!r.transaction_id) continue;
+
+    // Load the predecessor's full state before we soft-delete it.
+    const { data: oldRow } = await admin
+      .from("transactions")
+      .select(
+        "id, account_id, user_id, merchant_name, name, amount, date, excluded_from_stats, split_type, split_value, split_raw_input, split_note, notes, last_user_edit_at, last_notified_at, notified_amount",
+      )
+      .eq("plaid_transaction_id", r.transaction_id)
+      .maybeSingle();
+
+      const hasUserState =
+      oldRow != null &&
+      (oldRow.excluded_from_stats === true ||
+        oldRow.split_type !== "none" ||
+        (oldRow.notes != null && oldRow.notes.length > 0) ||
+        oldRow.last_notified_at != null);
+
+      if (oldRow && hasUserState) {
+      // Find a recently-inserted active row on the same account with the
+      // same merchant + amount within ±5% within ±7 days. We just upserted
+      // `added` rows in step 6, so the replacement is already in the DB and
+      // not yet soft-deleted (we're still iterating `removed`).
+      const merchantPattern = normalizeMerchant(
+        oldRow.merchant_name ?? oldRow.name,
+      );
+      const lo = new Date(oldRow.date);
+      lo.setDate(lo.getDate() - 7);
+      const hi = new Date(oldRow.date);
+      hi.setDate(hi.getDate() + 7);
+
+      const { data: candidates } = await admin
+        .from("transactions")
+        .select(
+          "id, plaid_transaction_id, merchant_name, name, amount",
+        )
+        .eq("account_id", oldRow.account_id)
+        .eq("user_id", oldRow.user_id)
+        .neq("plaid_transaction_id", r.transaction_id)
+        .is("deleted_at", null)
+        .gte("date", lo.toISOString().slice(0, 10))
+        .lte("date", hi.toISOString().slice(0, 10))
+        .order("created_at", { ascending: false })
+        .limit(8);
+
+      const replacement = (candidates ?? []).find((c) => {
+        const cPattern = normalizeMerchant(c.merchant_name ?? c.name);
+        if (!merchantPattern || cPattern !== merchantPattern) return false;
+        const oldAbs = Math.abs(oldRow.amount);
+        const newAbs = Math.abs(c.amount);
+        const tolerance = Math.max(oldAbs * 0.05, 0.5);
+        return Math.abs(oldAbs - newAbs) <= tolerance;
+      });
+
+      if (replacement) {
+        await admin
+          .from("transactions")
+          .update({
+            excluded_from_stats: oldRow.excluded_from_stats,
+            split_type: oldRow.split_type,
+            split_value: oldRow.split_value,
+            split_raw_input: oldRow.split_raw_input,
+            split_note: oldRow.split_note,
+            notes: oldRow.notes,
+            last_user_edit_at: oldRow.last_user_edit_at,
+            // Inheriting last_notified_at also makes send_wa_notification
+            // skip the duplicate ping for the new row (its existing
+            // already_notified gate kicks in).
+            last_notified_at: oldRow.last_notified_at,
+            notified_amount: oldRow.notified_amount,
+          })
+          .eq("id", replacement.id);
+
+        await admin.from("app_events").insert({
+          user_id: oldRow.user_id,
+          event_type: "tx_state_carried_over",
+          payload: {
+            from_id: oldRow.id,
+            to_id: replacement.id,
+            from_plaid_id: r.transaction_id,
+            to_plaid_id: replacement.plaid_transaction_id,
+            merchant: oldRow.merchant_name ?? oldRow.name,
+          },
+        });
+        carriedOverCount++;
+      }
+    }
+
+    // Now soft-delete the predecessor. (Order: copy-then-delete so the active
+    // SELECT above can find the row even if iteration order is unusual.)
     await admin
       .from("transactions")
       .update({ deleted_at: new Date().toISOString() })
@@ -294,5 +392,6 @@ export async function syncPlaidItem(payload: {
     modified: modified.length,
     removed: removed.length,
     balances_updated: balancesUpdated,
+    carried_over: carriedOverCount,
   };
 }

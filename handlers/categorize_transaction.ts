@@ -105,7 +105,35 @@ export async function categorizeTransactionHandler(payload: {
   // Enqueue WhatsApp notification for non-transfer transactions. Transfers are
   // silent (decision in 05-whatsapp.md). Idempotency key keys on tx + variant
   // so re-running categorize won't double-notify.
+  //
+  // INITIAL-BACKFILL SILENCE: when a fresh Plaid item is linked, INITIAL_UPDATE
+  // and HISTORICAL_UPDATE webhooks arrive within minutes and replay 24 months
+  // of history through this handler. The user doesn't want a flood for charges
+  // they've already seen — only "truly new" tx after they're done linking
+  // should ping. Gate: skip the WA enqueue if the parent plaid_item was
+  // created within the last 60 minutes. After 60 min we assume the initial
+  // backfill burst is done and treat new tx as real-time.
+  let inInitialBackfillWindow = false;
   if (!pairResult.paired) {
+    const { data: account } = await admin
+      .from("accounts")
+      .select("plaid_item_id")
+      .eq("id", tx.account_id)
+      .maybeSingle();
+    if (account?.plaid_item_id) {
+      const { data: item } = await admin
+        .from("plaid_items")
+        .select("created_at")
+        .eq("id", account.plaid_item_id)
+        .maybeSingle();
+      if (item?.created_at) {
+        const ageMs = Date.now() - new Date(item.created_at).getTime();
+        inInitialBackfillWindow = ageMs < 60 * 60 * 1000;
+      }
+    }
+  }
+
+  if (!pairResult.paired && !inInitialBackfillWindow) {
     try {
       await publishJob({
         type: "send_wa_notification",

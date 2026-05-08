@@ -52,15 +52,21 @@ export async function POST(request: NextRequest) {
   }
 
   // Always log the raw payload — append-only audit log.
-  await admin.from("plaid_webhooks").insert({
-    user_id: userId,
-    webhook_type: webhookType,
-    webhook_code: webhookCode,
-    plaid_item_id: plaidItemId,
-    item_uuid: itemUuid,
-    payload: payload as unknown as Json,
-    processed: false,
-  });
+  // Insert with processed=false; flip to true after dispatch below so the
+  // audit field reflects what actually happened.
+  const { data: insertedWebhook } = await admin
+    .from("plaid_webhooks")
+    .insert({
+      user_id: userId,
+      webhook_type: webhookType,
+      webhook_code: webhookCode,
+      plaid_item_id: plaidItemId,
+      item_uuid: itemUuid,
+      payload: payload as unknown as Json,
+      processed: false,
+    })
+    .select("id")
+    .single();
 
   // Bump last_webhook_at on the item.
   if (itemUuid) {
@@ -125,6 +131,20 @@ export async function POST(request: NextRequest) {
         })
         .eq("id", itemUuid);
     }
+  }
+
+  // Mark the audit row as processed so plaid_webhooks doesn't look like a
+  // graveyard of unprocessed events. We mark even when nothing was dispatched
+  // (e.g., ITEM/NEW_ACCOUNTS_AVAILABLE) — the row was processed in the sense
+  // that we read it, decided what to do, and acted (or chose to ignore).
+  if (insertedWebhook?.id) {
+    await admin
+      .from("plaid_webhooks")
+      .update({
+        processed: true,
+        processed_at: new Date().toISOString(),
+      })
+      .eq("id", insertedWebhook.id);
   }
 
   return Response.json({ ok: true, dispatched });
