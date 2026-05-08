@@ -8,6 +8,7 @@ import {
   type Action,
 } from "@/lib/intent";
 import { upsertCategoryRule } from "@/lib/categorize";
+import { getUserWhatsAppNumber } from "@/lib/profile";
 import { formatCurrency } from "@/lib/format";
 import type { Json, TablesUpdate } from "@/lib/database.types";
 
@@ -480,6 +481,10 @@ async function sendAndLog(params: {
 }): Promise<void> {
   const admin = createAdminClient();
 
+  // Multi-user recipient lookup. If the user has no phone yet, log the
+  // outbound row as `failed` (so the audit log shows we tried) and bail.
+  const recipient = await getUserWhatsAppNumber(params.userId);
+
   const { data: pending, error: insertErr } = await admin
     .from("whatsapp_messages")
     .insert({
@@ -487,8 +492,9 @@ async function sendAndLog(params: {
       direction: "outbound",
       body: params.body,
       related_transaction_id: params.relatedTransactionId ?? null,
-      status: "pending",
+      status: recipient ? "pending" : "failed",
       template_name: params.template,
+      error: recipient ? null : "no_whatsapp_number",
     })
     .select("id")
     .single();
@@ -497,8 +503,10 @@ async function sendAndLog(params: {
     throw new Error(`whatsapp_messages insert failed: ${insertErr?.message ?? "missing"}`);
   }
 
+  if (!recipient) return;
+
   try {
-    const result = await sendWhatsAppMessage({ body: params.body });
+    const result = await sendWhatsAppMessage({ to: recipient, body: params.body });
     await admin
       .from("whatsapp_messages")
       .update({

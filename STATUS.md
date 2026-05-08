@@ -9,7 +9,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Current phase
 
-**Phase 5 — Stats & charts** — live, with the live-net-worth + same-day comparison fixes shipped. Net worth is computed from `accounts.current_balance` (refreshed by every `transactionsSync` response — zero metered Plaid Balance calls). Dashboard auto-fires `/api/refresh` on mount so opening the app nudges a sync, then the realtime listener swaps in the fresh number. Spending comparison is now apples-to-apples: this-month-thru-day-N vs last-month-thru-day-N. Daily snapshot cron is now redundant — should be downgraded to weekly or removed from cron-job.org.
+**Plaid Production live · multi-user infrastructure shipped.** Phase 5 dashboard is fully operational. Plaid post-launch fixes (state carry-over for pending→posted re-id, 24-month history depth, initial-backfill notification silence) and infinite scroll on `/transactions` shipped. Profiles table + `/settings` + per-user WhatsApp routing landed — `USER_WHATSAPP_TO` env var retired. Twilio WhatsApp prod is parked (multi-day Meta verification + template approvals).
 
 ---
 
@@ -94,6 +94,16 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
   - `<StatCard>` — top-row card with kicker, big italic Fraunces value, color-aware delta pill (good = emerald, bad = rose, neutral = muted), footnote.
   - Dashboard rebuild (`app/(app)/page.tsx`): server component does parallel `Promise.all` over `v_spending` (last + this month), `v_net_worth_daily` (last 90d), recent transactions, categories. Aggregates by category and by date in JS. Renders empty state if no accounts. Uses `force-dynamic`.
   - `<RealtimeListener>` mounted in `(app)/layout.tsx`: subscribes to `transactions` and `accounts` Postgres changes filtered by `user_id`, debounces 400ms, calls `router.refresh()` so server pages re-fetch without a hard reload.
+- 2026-05-04 — **Plaid post-launch fixes** (Production cutover):
+  - **Migration 0009**: `accounts.plaid_account_id` unique constraint demoted to partial unique index `WHERE is_archived = false`. Old strict constraint blocked re-linking the same bank because Plaid reuses the same `account_id` across re-links. Now archived rows can coexist with active replacements forever.
+  - **`days_requested: 730`** added to `linkTokenCreate`. Plaid was defaulting to 90 days of history, which is why the initial Chase + Robinhood imports only spanned Feb–May. New links request the full 24-month window banks expose. Existing items must be re-linked to get the deeper history.
+  - **`processed=true` cosmetic fix** in `/api/plaid/webhook` — the audit row now flips after dispatch so `plaid_webhooks` doesn't look like a graveyard.
+  - **Fix A: state carry-over on Plaid pending→posted re-id.** `handlers/sync_plaid_item.ts` now detects when Plaid replaces a row (different `plaid_transaction_id`) and copies `excluded_from_stats`, `split_*`, `notes`, `last_user_edit_at`, `last_notified_at`, `notified_amount` from the soft-deleted predecessor onto the replacement. Match is by same account + same merchant_pattern + amount within ±5% + date within ±7 days. Inheriting `last_notified_at` also makes `send_wa_notification` skip the duplicate ping automatically (no extra gate needed).
+  - **60-min initial-backfill silence** in `handlers/categorize_transaction.ts` — when a fresh Plaid item is linked, the 24-month history backfill replays through categorize → send_wa_notification and would fire ~20-60 WA messages. New gate: skip enqueueing WA when the parent `plaid_items.created_at` is < 60 min ago. Real-time tx after the backfill window pings normally.
+- 2026-05-04 — **Infinite scroll on `/transactions`**:
+  - `app/api/transactions/route.ts` — auth-gated GET with `?offset&limit`, RLS-scoped, returns `{rows, total}`.
+  - `components/app/transactions/transactions-list.tsx` — client component that holds rows in state, fires the API via IntersectionObserver (400px-rootMargin sentinel), de-dupes by id on append, shows a status footer (`scroll for more · X of Y` / `loading more` / `end of ledger`). Per-row test-WA + category picker + source tag preserved.
+  - `app/(app)/transactions/page.tsx` server component now passes initial 100 rows + total + categories + accounts to the client component. Page header shows total entry count.
 - 2026-05-04 — **Phase 5 — live net-worth + apples-to-apples spending fix**:
   - `handlers/sync_plaid_item.ts` now captures the `accounts` array from the last `transactionsSync` response and uses it to (a) update `accounts.{current,available}_balance` and (b) upsert today's `balance_snapshots(account_id, date)` row. Zero extra Plaid API calls — the balance data was always in the sync response, we were just throwing it away. **Replaces the metered `accountsBalanceGet` path entirely** for normal operation.
   - Dashboard "Net worth" stat card now reads **live** from `sum(asset accounts) - sum(liability accounts)` over `accounts.current_balance`. The chart's "today" point is overlaid with the live total so the chart and card never disagree.
@@ -112,28 +122,26 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 
 ## Up next
 
-**Phase 5 wrap-up — one cron-job.org config + smoke-test the dashboard.**
+**To get 24-month history**: disconnect Chase + Robinhood with "Also wipe transaction history" on `/accounts`, then re-link both via Plaid Link. The new linkTokenCreate now requests `days_requested: 730`, so the new items will pull 24 months. The partial unique index on `accounts.plaid_account_id` allows the re-link to claim the same Plaid account_ids that the archived ones still hold.
 
-1. **cron-job.org** → schedule a daily 03:00 GET to `https://finance-planning-nu.vercel.app/api/cron/snapshot-balances` with `Authorization: Bearer <CRON_SECRET>`. After a few days, the net-worth chart will start showing real movement instead of a single seeded point.
+**Multi-user smoke-test** when a friend joins:
+1. They sign up at `/signup` → trigger auto-creates their profile.
+2. They visit `/settings` → enter their WhatsApp number → save.
+3. They send `join {keyword}` to `whatsapp:+14155238886` once.
+4. They link their bank on `/accounts`.
+5. From there: notifications + replies route to their phone, scoped by `From` field.
 
-2. **Visual smoke-test** at `/`:
-   - Top cards: "Spent this month" total + "vs last" delta; "Net worth" + 30d delta.
-   - Donut: spending by category, this month, with center total + legend (top 6 + "+ N more").
-   - Bars: daily spending, this month (zero days included).
-   - Area: net-worth line, last 90 days (currently 1 point — will fill in).
-   - Recent activity: last 8 non-deleted transactions.
-   - Realtime: edit a category via WhatsApp or the picker — dashboard re-renders within a second.
+**Outstanding config items** (whenever):
+- **cron-job.org daily 03:00** → `/api/cron/snapshot-balances` (still useful as a backstop even though `transactionsSync` already writes daily snapshots).
+- **cron-job.org hourly** → `/api/cron/sync-fallback`.
 
-**Phase 1 wrap-up still pending** (do whenever):
-- **Plaid Dashboard** → Webhook URL → `https://finance-planning-nu.vercel.app/api/plaid/webhook`
-- **cron-job.org** → hourly GET `https://finance-planning-nu.vercel.app/api/cron/sync-fallback` with `Authorization: Bearer <CRON_SECRET>`
-
-**Then** — `/transactions` filters (date range, category, account, search, toggles, URL-driven), or jump to **Phase 6** polish:
-- Transaction detail page with signed-URL receipt thumbnails (Phase 4's WA-uploaded photos viewable in the web UI).
+**Phase 6 candidates** (open-ended):
+- Transaction detail page `/transactions/[id]` with signed-URL receipt thumbnails (Phase 4's WA-uploaded photos viewable).
 - `/admin/health` (categorization source mix, WA latency, recent failed jobs).
 - Category management (rename / recolor / merge).
 - Manual transaction creation (cash).
 - CSV export.
+- Twilio Production WhatsApp (Meta business verification + template approvals — multi-day project, parked).
 
 ---
 
@@ -174,6 +182,15 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 - 2026-05-04 — **Net-worth model = bank truth (Model A), not transaction replay.** Considered replaying net worth from `effective_amount` history (would catch splits immediately) but rejected: it goes structurally blind to investment growth (Robinhood up 5% with no trade = invisible), drifts from the bank app, and never self-corrects on never-paid splits. Plaid balances are correct over time and self-correct when Venmo paybacks land. The split-dip is a small, temporary visual artifact we accept.
 - 2026-05-04 — **Spending comparison = same day of month, not full month.** Comparing 4 days of May vs all 30 days of April was structurally misleading early-month. New rule: this-month-thru-today vs last-month-thru-same-day. Clamps to last day of previous month if the day overflows (Mar 31 → Feb 28). Footnote still surfaces the full-last-month total for sanity.
 - 2026-05-04 — **`/api/refresh` is on-mount, not on-tap.** Dashboard auto-fires once via `<RefreshOnMount>` with a 5-min staleness gate per item. No manual refresh button — the realtime listener already handles "show fresh data when something changes." If a user is on the page and a sync lands from a webhook, they see the update without doing anything.
+- 2026-05-04 — **Multi-user infrastructure landed (migration 0010).**
+  - `profiles` table: `(user_id, whatsapp_number, display_name)`, RLS owner-only, partial unique index on `whatsapp_number WHERE NOT NULL` so two accounts can't claim the same WA number. Auto-insert trigger on `auth.users` INSERT.
+  - `lib/profile.ts`: `getUserWhatsAppNumber(userId)` and `findUserByWhatsAppNumber(fromField)` helpers, both via service-role.
+  - `lib/twilio.ts`: removed `getWhatsAppTo()` env-var lookup. `sendWhatsAppMessage({to, body})` now requires an explicit recipient. `formatWhatsAppRecipient(phoneE164)` adds the `whatsapp:` prefix.
+  - `handlers/send_wa_notification.ts`: looks up recipient via `getUserWhatsAppNumber(tx.user_id)`. Skips silently if no phone set (user finished signup but didn't complete WA onboarding).
+  - `handlers/parse_wa_reply.ts`: `sendAndLog` uses the profile too. Outbound row is logged as `failed` with error `no_whatsapp_number` if the user's phone is unset, so the audit log still captures the attempt.
+  - `app/api/whatsapp/webhook/route.ts`: inbound resolution swapped from "most recent outbound's user_id" to `findUserByWhatsAppNumber(From)`. No more single-user assumption. Drops silently if the sender isn't a user.
+  - **`/settings` page**: form for display name + WhatsApp number with E.164 normalization + 10-digit-US auto-prefix + unique-constraint friendly error. Server action `updateProfile` with revalidation. Plus copy explaining the Twilio-sandbox `join {keyword}` step each new user has to do.
+  - `USER_WHATSAPP_TO` env var is no longer read anywhere — safe to delete from Vercel env vars (existing user's number was migrated to `profiles.whatsapp_number` via SQL).
 - 2026-05-04 — **WA notifications are silent on backfill (>2 days old) and on Transfer-categorized rows.** Linking a new Plaid sandbox item fired 61 `tx_notification` rows in 5 seconds because the initial sync replayed every historical tx through categorize → send_wa_notification. Two gates added in `send_wa_notification`: (a) `variant='new'` skip when `tx.date < now − 2 days` (real-time tx are always today/yesterday); (b) skip when `user_category = 'Transfer'` even if `is_transfer = false` (Plaid PFC tags things like "CD DEPOSIT", "CREDIT CARD PAYMENT", "AUTOMATIC PAYMENT" as Transfer; the transfer-pair worker only flips `is_transfer` when both sides exist among user-owned accounts, so "lone transfers" leak through). The `re-notify` variant is exempt from the age gate.
 - 2026-05-04 — **Plaid env: PRODUCTION** (supersedes the 2026-05-03 sandbox entry above). Approval cleared (Chase + Amex). `.env.local` and Vercel env vars (Production + Development targets) rotated to `PLAID_ENV=production` + production `PLAID_SECRET`. Existing 3 sandbox `plaid_items` in DB still hold sandbox-encrypted access tokens — `transactionsSync` against them will 400 against production env. Disconnect them via the new `/accounts` UI before linking real banks.
 - 2026-05-04 — **Disconnect = soft by default, opt-in hard wipe.** `/api/plaid/disconnect` always (a) tries `itemRemove` on Plaid (best-effort — sandbox tokens against production env will 400, that's fine), (b) sets `plaid_items.status='disconnected'`, and (c) archives accounts. Transactions are preserved by default for history. The `wipe_transactions: true` body flag (exposed as a checkbox in the confirm dialog) additionally soft-deletes every transaction on those accounts — meant for sandbox-cleanup before real-bank cutover, NOT a routine disconnect.
@@ -194,7 +211,7 @@ For the spec, see [docs/00-overview.md](docs/00-overview.md) and the rest.
 > Things that work but aren't quite right. Fix as time allows; don't ship to a real (multi-)user without addressing.
 
 - **`category_rules.times_applied` doesn't actually increment.** [lib/categorize.ts:62](lib/categorize.ts) writes a literal `1` instead of `times_applied + 1` when a rule matches. The Supabase JS client doesn't expose Postgres `+= 1` syntax — fix is a SECURITY DEFINER RPC `increment_category_rule_usage(user_id, merchant_pattern)` that does an atomic `UPDATE … SET times_applied = times_applied + 1, last_applied_at = now()`. Cosmetic for one user (the column was meant to power "your most-trained rules" analytics in Phase 6); not a correctness bug — wrong category is never returned.
-- **Plaid webhook signature verification still deferred** (decision logged earlier). Now the *only* unverified webhook in the system (Twilio inbound is signed as of P4). Plaid webhooks still only enqueue idempotent sync jobs against an existing `item_id`, so the blast radius remains bounded — but we should wire it before flipping back to Plaid Production with real bank data.
+- **Plaid webhook signature verification still deferred** — and now we ARE on Production with real bank data flowing. Bumped from "should fix" to "fix this week." Blast radius: a forged webhook with a known `item_id` triggers our sync (idempotent — Plaid is the cursor source of truth, so worst case is a few wasted API calls and noise in `app_events`). Still: real money flow, sign the damn webhook.
 - **No web UI for receipts yet.** Photos uploaded via WhatsApp land in the private `receipts` bucket and the `transaction_attachments` table, but `/transactions` doesn't render them. Phase 6 will add a transaction-detail page with signed-URL thumbnails.
 - **Inbound user_id resolution is single-user.** `app/api/whatsapp/webhook/route.ts:resolveInboundUserId` finds the most recent outbound row's `user_id`, falling back to "first user in `auth.users`" if there are no outbounds yet. Fine for one user; would need to map by `From` (WhatsApp number) → user lookup if we ever expand.
 

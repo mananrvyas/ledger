@@ -1,6 +1,7 @@
 import "server-only";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { sendWhatsAppMessage } from "@/lib/twilio";
+import { getUserWhatsAppNumber } from "@/lib/profile";
 import { formatCurrency, formatShortDate } from "@/lib/format";
 import type { Json } from "@/lib/database.types";
 
@@ -82,6 +83,14 @@ export async function sendWaNotificationHandler(payload: {
     return { ok: true, skipped: true, reason: "already_notified" };
   }
 
+  // Multi-user: resolve recipient from the user's profile, not env. If the
+  // user hasn't set a phone yet, drop silently — they finished signup but
+  // didn't complete WA onboarding.
+  const recipient = await getUserWhatsAppNumber(tx.user_id);
+  if (!recipient) {
+    return { ok: true, skipped: true, reason: "no_whatsapp_number" };
+  }
+
   const merchant = tx.merchant_name ?? tx.name ?? "Unknown merchant";
   const category = tx.user_category ?? "Uncategorized";
   const isCredit = tx.amount < 0;
@@ -131,7 +140,7 @@ export async function sendWaNotificationHandler(payload: {
   }
 
   try {
-    const result = await sendWhatsAppMessage({ body });
+    const result = await sendWhatsAppMessage({ to: recipient, body });
 
     await admin
       .from("whatsapp_messages")

@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { publishJob } from "@/lib/qstash";
+import { findUserByWhatsAppNumber } from "@/lib/profile";
 import type { Json, TablesUpdate } from "@/lib/database.types";
 import twilio from "twilio";
 
@@ -93,13 +94,15 @@ export async function POST(request: NextRequest) {
   // ---------------------------------------------------------------------
   // Inbound message path
   // ---------------------------------------------------------------------
-  // For one user we map any inbound to the single configured user. We
-  // resolve their user_id by finding the most recent outbound row (which
-  // was inserted with the canonical user_id). If there's no outbound yet
-  // we fall back to the first user in auth.users — single-user app, safe.
-  const userId = await resolveInboundUserId();
+  // Resolve user by the sender's WhatsApp number (Twilio sends `From` as
+  // `whatsapp:+15551234567`). Each user stores their own phone in
+  // `profiles.whatsapp_number`, so this is the multi-user routing key.
+  // Drop silently if no user owns this number — most likely a stranger
+  // who somehow found our sandbox endpoint, or a user who hasn't completed
+  // onboarding yet.
+  const fromField = params["From"] ?? "";
+  const userId = await findUserByWhatsAppNumber(fromField);
   if (!userId) {
-    // No user yet — drop the message silently rather than 500.
     return twimlResponse();
   }
 
@@ -183,19 +186,3 @@ async function handleStatusCallback(params: {
     .eq("twilio_message_sid", params.sid);
 }
 
-async function resolveInboundUserId(): Promise<string | null> {
-  const admin = createAdminClient();
-  // Fast path: we've sent at least one outbound — pick that user.
-  const { data: outbound } = await admin
-    .from("whatsapp_messages")
-    .select("user_id")
-    .eq("direction", "outbound")
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (outbound?.user_id) return outbound.user_id;
-
-  // Fallback for a fresh install: first user in the system. Single-user app.
-  const { data: users } = await admin.auth.admin.listUsers({ page: 1, perPage: 1 });
-  return users?.users?.[0]?.id ?? null;
-}

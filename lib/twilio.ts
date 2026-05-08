@@ -33,18 +33,16 @@ export function getWhatsAppFrom(): string {
   return from.startsWith("whatsapp:") ? from : `whatsapp:${from}`;
 }
 
-/** Recipient (your own paired WhatsApp number for the sandbox). */
-export function getWhatsAppTo(): string {
-  const to = process.env.USER_WHATSAPP_TO;
-  if (!to || to === "REPLACE_ME") {
-    throw new Error(
-      "USER_WHATSAPP_TO not set (your WhatsApp number, e.g. whatsapp:+15551234567)",
-    );
-  }
-  return to.startsWith("whatsapp:") ? to : `whatsapp:${to}`;
+/** Format a stored phone number (E.164 like `+15551234567`) for WhatsApp. */
+export function formatWhatsAppRecipient(phoneE164: string): string {
+  return phoneE164.startsWith("whatsapp:")
+    ? phoneE164
+    : `whatsapp:${phoneE164}`;
 }
 
 export type SendWhatsAppParams = {
+  /** Recipient in E.164 (`+15551234567`) or `whatsapp:+1...`. */
+  to: string;
   body: string;
   /** Optional Twilio MessagingService / status callback URL. */
   statusCallback?: string;
@@ -67,7 +65,7 @@ export async function sendWhatsAppMessage(
 ): Promise<SendWhatsAppResult> {
   const client = getTwilioClient();
   const from = getWhatsAppFrom();
-  const to = getWhatsAppTo();
+  const to = formatWhatsAppRecipient(params.to);
 
   const message = await client.messages.create({
     from,
