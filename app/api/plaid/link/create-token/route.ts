@@ -32,18 +32,30 @@ export async function POST(_request: NextRequest) {
       ? (body.access_token as string | undefined)
       : undefined;
 
-  // In sandbox, pre-fill the phone number with a Plaid sandbox-valid value so
-  // Plaid Layer skips the phone-entry step (OTP `123456` still required).
-  // In production, leave it unset — Plaid Layer will ask the user for their
-  // real number, or skip Layer entirely depending on their setup.
+  // Plaid Layer pre-fills the user's number when we pass `phone_number`.
+  // - Sandbox: only Plaid's magic test numbers work, so use +14155550123.
+  // - Production: pre-fill the user's own profile number if they've set it.
+  //   Falls back to "ask in Layer" if they haven't.
+  // No more hardcoded sandbox number leaking into a friend's production link.
   const isSandbox = process.env.PLAID_ENV === "sandbox";
+  let phoneNumber: string | undefined;
+  if (isSandbox) {
+    phoneNumber = "+14155550123";
+  } else {
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("whatsapp_number")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    phoneNumber = profile?.whatsapp_number ?? undefined;
+  }
 
   const plaid = getPlaidClient();
   try {
     const linkResp = await plaid.linkTokenCreate({
       user: {
         client_user_id: user.id,
-        ...(isSandbox ? { phone_number: "+14155550123" } : {}),
+        ...(phoneNumber ? { phone_number: phoneNumber } : {}),
       },
       client_name: PLAID_CLIENT_NAME,
       products: accessToken ? undefined : PLAID_PRODUCTS,

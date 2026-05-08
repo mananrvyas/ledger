@@ -11,11 +11,17 @@ export const dynamic = "force-dynamic";
  *
  * Tries to release the item on Plaid's side via `itemRemove` (best-effort —
  * fails silently for sandbox tokens against production env, expired tokens,
- * etc.). Then soft-deletes locally:
- *   - plaid_items.status = 'disconnected'
- *   - accounts.is_archived = true (for accounts on this item)
- *   - if `wipe_transactions` body flag is set, transactions.deleted_at = now()
- *     for all txs on those accounts
+ * etc.). Then locally:
+ *
+ *   wipe_transactions = false (default)
+ *     - plaid_items.status = 'disconnected'
+ *     - accounts.is_archived = true (history preserved, dashboard hides them)
+ *
+ *   wipe_transactions = true
+ *     - HARD DELETE plaid_items row → cascades to accounts → cascades to
+ *       transactions → cascades to balance_snapshots + attachments.
+ *       Frees the plaid_account_ids cleanly so the same bank can be
+ *       re-linked with no leftover constraint surface.
  *
  * Body: { plaid_item_id: string, wipe_transactions?: boolean }
  *
@@ -66,9 +72,67 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Local soft-deletes via service-role client.
   const admin = createAdminClient();
 
+  // Pre-count children for the audit log + UI confirmation message, since a
+  // hard delete removes the rows we'd otherwise count.
+  const { data: accountsForItem } = await admin
+    .from("accounts")
+    .select("id")
+    .eq("plaid_item_id", item.id);
+  const accountIds = (accountsForItem ?? []).map((a) => a.id);
+
+  let txCount = 0;
+  if (accountIds.length > 0) {
+    const { count } = await admin
+      .from("transactions")
+      .select("id", { count: "exact", head: true })
+      .in("account_id", accountIds)
+      .is("deleted_at", null);
+    txCount = count ?? 0;
+  }
+
+  if (body.wipe_transactions) {
+    // Hard delete the item. FKs cascade:
+    //   plaid_items → accounts → transactions → (balance_snapshots,
+    //                                            transaction_attachments)
+    // category_rules and app_events have no FK and are kept (rules are
+    // merchant-keyed, useful even after a re-link).
+    const { error: delErr } = await admin
+      .from("plaid_items")
+      .delete()
+      .eq("id", item.id);
+    if (delErr) {
+      return Response.json(
+        { error: `item_delete_failed: ${delErr.message}` },
+        { status: 500 },
+      );
+    }
+
+    await admin.from("app_events").insert({
+      user_id: user.id,
+      event_type: "plaid_item_deleted",
+      payload: {
+        plaid_item_uuid: item.id,
+        institution_name: item.institution_name,
+        plaid_remove_status: plaidRemoveStatus,
+        plaid_remove_error: plaidRemoveError,
+        accounts_deleted: accountIds.length,
+        transactions_deleted: txCount,
+        wipe_transactions: true,
+      },
+    });
+
+    return Response.json({
+      ok: true,
+      plaid_remove_status: plaidRemoveStatus,
+      accounts_archived: accountIds.length,
+      transactions_deleted: txCount,
+      hard_deleted: true,
+    });
+  }
+
+  // Soft-archive path: keep history, mark item disconnected, archive accounts.
   const { error: itemUpdErr } = await admin
     .from("plaid_items")
     .update({
@@ -84,34 +148,15 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { data: archivedAccounts, error: acctErr } = await admin
+  const { error: acctErr } = await admin
     .from("accounts")
     .update({ is_archived: true })
-    .eq("plaid_item_id", item.id)
-    .select("id");
+    .eq("plaid_item_id", item.id);
   if (acctErr) {
     return Response.json(
       { error: `account_archive_failed: ${acctErr.message}` },
       { status: 500 },
     );
-  }
-
-  let transactionsDeleted = 0;
-  if (body.wipe_transactions && archivedAccounts && archivedAccounts.length > 0) {
-    const accountIds = archivedAccounts.map((a) => a.id);
-    const { data: deletedRows, error: txErr } = await admin
-      .from("transactions")
-      .update({ deleted_at: new Date().toISOString() })
-      .in("account_id", accountIds)
-      .is("deleted_at", null)
-      .select("id");
-    if (txErr) {
-      return Response.json(
-        { error: `transactions_wipe_failed: ${txErr.message}` },
-        { status: 500 },
-      );
-    }
-    transactionsDeleted = deletedRows?.length ?? 0;
   }
 
   await admin.from("app_events").insert({
@@ -122,16 +167,16 @@ export async function POST(request: NextRequest) {
       institution_name: item.institution_name,
       plaid_remove_status: plaidRemoveStatus,
       plaid_remove_error: plaidRemoveError,
-      accounts_archived: archivedAccounts?.length ?? 0,
-      transactions_deleted: transactionsDeleted,
-      wipe_transactions: !!body.wipe_transactions,
+      accounts_archived: accountIds.length,
+      transactions_deleted: 0,
+      wipe_transactions: false,
     },
   });
 
   return Response.json({
     ok: true,
     plaid_remove_status: plaidRemoveStatus,
-    accounts_archived: archivedAccounts?.length ?? 0,
-    transactions_deleted: transactionsDeleted,
+    accounts_archived: accountIds.length,
+    transactions_deleted: 0,
   });
 }

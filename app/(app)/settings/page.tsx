@@ -1,10 +1,46 @@
 import Link from "next/link";
+import QRCode from "qrcode";
 import { ArrowUpRight, MessageCircle, ShieldAlert } from "lucide-react";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { ProfileForm } from "./profile-form";
 
 export const dynamic = "force-dynamic";
+
+/** Build the deep-link + QR for the Twilio sandbox join. wa.me is the
+ * canonical WhatsApp deep-link host; tapping it (or scanning the QR) opens
+ * WhatsApp with the message pre-typed, so the user just taps Send.
+ *
+ * Keyword + sandbox number come from env so swapping Twilio sandboxes (or
+ * eventually moving to WA Business prod) doesn't require a code change.
+ */
+async function buildWhatsAppJoin(): Promise<{
+  waUrl: string;
+  qrSvg: string;
+  keyword: string | null;
+  sandboxNumber: string;
+} | null> {
+  const sandboxRaw = process.env.TWILIO_WHATSAPP_FROM;
+  if (!sandboxRaw) return null;
+  const sandboxNumber = sandboxRaw.replace(/^whatsapp:/, "");
+  const cleanForUrl = sandboxNumber.replace(/[^\d]/g, "");
+
+  const keyword = process.env.TWILIO_SANDBOX_JOIN_KEYWORD ?? null;
+  const message = keyword ? `join ${keyword}` : "join";
+  const waUrl = `https://wa.me/${cleanForUrl}?text=${encodeURIComponent(message)}`;
+
+  const qrSvg = await QRCode.toString(waUrl, {
+    type: "svg",
+    margin: 1,
+    width: 200,
+    color: {
+      dark: "#0a0a09",
+      light: "#f5f1e8",
+    },
+  });
+
+  return { waUrl, qrSvg, keyword, sandboxNumber };
+}
 
 export default async function SettingsPage() {
   const supabase = await createClient();
@@ -24,6 +60,8 @@ export default async function SettingsPage() {
     .select("whatsapp_number, display_name")
     .eq("user_id", user.id)
     .maybeSingle();
+
+  const join = await buildWhatsAppJoin();
 
   return (
     <div className="space-y-12">
@@ -54,30 +92,79 @@ export default async function SettingsPage() {
 
       <section className="reveal reveal-3 space-y-3">
         <p className="font-mono text-[10px] uppercase tracking-[0.22em] text-muted-foreground/80">
-          WhatsApp routing
+          Pair WhatsApp
         </p>
         <div className="rounded-xl border border-border bg-card p-6">
-          <div className="flex items-start gap-4">
-            <div className="inline-flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
-              <MessageCircle className="size-4" strokeWidth={1.5} />
+          <div className="flex flex-col gap-6 md:flex-row md:items-start">
+            <div className="flex-1 space-y-3">
+              <div className="flex items-start gap-3">
+                <div className="inline-flex size-9 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/20">
+                  <MessageCircle className="size-4" strokeWidth={1.5} />
+                </div>
+                <div className="space-y-2 text-[13px] leading-relaxed text-muted-foreground">
+                  <p className="text-foreground/90">
+                    One-time pairing: scan the QR with your phone to send the
+                    join keyword to Twilio.
+                  </p>
+                  {join?.keyword ? (
+                    <p>
+                      The QR opens WhatsApp pre-filled with{" "}
+                      <code className="rounded bg-muted px-1 py-0.5 font-mono text-[12px] text-foreground">
+                        join {join.keyword}
+                      </code>
+                      . Just tap Send.
+                    </p>
+                  ) : (
+                    <p>
+                      Scan from your phone, then tap Send. The QR is pre-filled
+                      with the join command from your Twilio sandbox.
+                    </p>
+                  )}
+                  <p className="text-muted-foreground/75">
+                    Twilio sandbox sessions expire after 72 idle hours. If
+                    notifications start failing with a{" "}
+                    <code className="font-mono text-[11px]">63015</code>{" "}
+                    error, scan this again.
+                  </p>
+                </div>
+              </div>
+              {join ? (
+                <div className="space-y-1 pt-2 font-mono text-[11px] tabular-nums text-muted-foreground/70">
+                  <p>
+                    <span className="text-muted-foreground/55">number ·</span>{" "}
+                    {join.sandboxNumber}
+                  </p>
+                  {join.keyword ? (
+                    <p>
+                      <span className="text-muted-foreground/55">keyword ·</span>{" "}
+                      {join.keyword}
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
-            <div className="space-y-2 text-[13px] leading-relaxed text-muted-foreground">
-              <p className="text-foreground/90">
-                Each user gets their own per-row notifications and reply pipeline.
-              </p>
-              <p>
-                Outbound notifications go to the WhatsApp number above. Inbound
-                replies are routed back to your account by matching the sender
-                number. So your phone, your transactions — no crosstalk if a
-                friend signs up on the same instance.
-              </p>
-              <p className="text-muted-foreground/75">
-                On the Twilio sandbox, each phone has to{" "}
-                <code>join {`{keyword}`}</code> once before messages flow.
-                Production WhatsApp Business removes that step (separate
-                project, days of paperwork).
-              </p>
-            </div>
+
+            {join ? (
+              <div className="flex flex-col items-center gap-2">
+                <a
+                  href={join.waUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block rounded-lg ring-1 ring-border transition-shadow hover:ring-primary/40"
+                  title="Open in WhatsApp"
+                  dangerouslySetInnerHTML={{ __html: join.qrSvg }}
+                />
+                <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-muted-foreground/55">
+                  scan or tap to open
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-border/60 p-4 text-center text-[11px] text-muted-foreground/60">
+                <code>TWILIO_WHATSAPP_FROM</code> not set —
+                <br />
+                QR unavailable.
+              </div>
+            )}
           </div>
         </div>
       </section>

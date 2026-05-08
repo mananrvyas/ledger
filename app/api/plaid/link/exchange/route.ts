@@ -75,15 +75,29 @@ export async function POST(request: NextRequest) {
       raw: a as unknown as Json,
     }));
 
+    // Plain insert — `accounts.plaid_account_id` has a partial unique index
+    // (`WHERE is_archived = false`, see migration 0009). PostgREST can't
+    // address a partial index from `onConflict`, so an upsert here would
+    // throw "no unique or exclusion constraint matching the ON CONFLICT
+    // specification" even when the partial index is satisfied. A re-link
+    // that follows a disconnect+wipe leaves the previous accounts archived,
+    // so a fresh insert with the same plaid_account_id passes the partial
+    // check cleanly. If a user somehow has the same active plaid_account_id
+    // (e.g. linked the same bank twice without disconnecting), the partial
+    // index throws 23505 and we surface it as a clean error.
     if (accountRows.length > 0) {
       const { error: accErr } = await admin
         .from("accounts")
-        .upsert(accountRows, { onConflict: "plaid_account_id" });
+        .insert(accountRows);
       if (accErr) {
-        return Response.json(
-          { error: `accounts insert failed: ${accErr.message}` },
-          { status: 500 },
-        );
+        // Clean up the just-inserted plaid_items row so we don't leave a
+        // stranded item with no children.
+        await admin.from("plaid_items").delete().eq("id", stored.id);
+        const friendly =
+          accErr.code === "23505"
+            ? "An account from this institution is already linked. Disconnect it first."
+            : `accounts insert failed: ${accErr.message}`;
+        return Response.json({ error: friendly }, { status: 500 });
       }
     }
 
