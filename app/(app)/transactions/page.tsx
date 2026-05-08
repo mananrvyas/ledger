@@ -1,43 +1,16 @@
 import Link from "next/link";
-import { ArrowLeftRight, Receipt, Undo2, Sparkles } from "lucide-react";
+import { Receipt } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import {
-  formatCurrency,
-  formatShortDate,
-  prettyType,
-} from "@/lib/format";
-import { CategoryPill, type CategoryMeta } from "@/components/app/category-pill";
-import { CategoryPicker } from "@/components/app/category-picker";
+import { type CategoryMeta } from "@/components/app/category-pill";
 import { RecategorizeAllButton } from "@/components/app/recategorize-all-button";
-import { SourceTag } from "@/components/app/source-tag";
 import { TestWhatsAppButton } from "@/components/app/test-whatsapp-button";
-import { cn } from "@/lib/utils";
+import {
+  TransactionsList,
+  type AccountInfo,
+  type TxRow,
+} from "@/components/app/transactions/transactions-list";
 
 export const dynamic = "force-dynamic";
-
-type Row = {
-  id: string;
-  account_id: string;
-  amount: number;
-  effective_amount: number | null;
-  date: string;
-  merchant_name: string | null;
-  name: string | null;
-  is_pending: boolean;
-  is_transfer: boolean;
-  is_refund: boolean;
-  user_category: string | null;
-  category_source: string | null;
-  excluded_from_stats: boolean;
-  split_type: string;
-};
-
-type AccountInfo = {
-  id: string;
-  name: string;
-  mask: string | null;
-  type: string;
-};
 
 const PAGE_SIZE = 100;
 
@@ -62,16 +35,15 @@ export default async function TransactionsPage() {
       .order("sort_order", { ascending: true }),
   ]);
 
-  const rows: Row[] = txns ?? [];
+  const rows: TxRow[] = txns ?? [];
   const accountList: AccountInfo[] = accounts ?? [];
-  const accountById = new Map(accountList.map((a) => [a.id, a]));
   const categoryList: CategoryMeta[] = (categories ?? []).map((c) => ({
     name: c.name,
     color: c.color,
     icon: c.icon,
   }));
-  const categoryByName = new Map(categoryList.map((c) => [c.name, c]));
 
+  const total = count ?? rows.length;
   const empty = rows.length === 0;
 
   return (
@@ -86,9 +58,7 @@ export default async function TransactionsPage() {
           </h1>
           <div className="flex items-center gap-3">
             <p className="font-mono text-[11px] tabular-nums tracking-[0.16em] text-muted-foreground/70">
-              {count !== null && count !== undefined
-                ? `showing ${rows.length} of ${count}`
-                : `${rows.length} loaded`}
+              {total > 0 ? `${total} ${total === 1 ? "entry" : "entries"}` : "—"}
             </p>
             <TestWhatsAppButton transactionId={rows[0]?.id} />
             <RecategorizeAllButton />
@@ -128,137 +98,13 @@ export default async function TransactionsPage() {
             <span className="text-right">Amount</span>
             <span className="sr-only">Actions</span>
           </div>
-          <ul className="divide-y divide-hairline">
-            {rows.map((t) => {
-              const account = accountById.get(t.account_id);
-              const isCredit = t.amount < 0;
-              const merchant = t.merchant_name ?? t.name ?? "—";
-              const subtitle =
-                t.merchant_name && t.name && t.merchant_name !== t.name
-                  ? t.name
-                  : null;
-              const category =
-                t.user_category && categoryByName.get(t.user_category)
-                  ? categoryByName.get(t.user_category)!
-                  : t.user_category
-                    ? { name: t.user_category, color: null, icon: null }
-                    : null;
-
-              const displayAmount =
-                t.effective_amount != null && t.split_type !== "none"
-                  ? t.effective_amount
-                  : t.amount;
-
-              return (
-                <li
-                  key={t.id}
-                  className={cn(
-                    "group grid grid-cols-[80px_1fr_180px_140px_140px_28px] items-baseline gap-4 px-6 py-3 transition-colors hover:bg-foreground/[0.025]",
-                    t.excluded_from_stats && "opacity-55",
-                  )}
-                >
-                  {/* Date */}
-                  <div className="space-y-0.5 font-mono text-[12px] tabular-nums text-muted-foreground">
-                    <p className="text-foreground/85">
-                      {formatShortDate(t.date)}
-                    </p>
-                    {t.is_pending ? (
-                      <p className="text-[9px] uppercase tracking-[0.18em] text-amber-400/85">
-                        pending
-                      </p>
-                    ) : null}
-                  </div>
-
-                  {/* Merchant */}
-                  <div className="space-y-0.5 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="truncate text-[14px] text-foreground">
-                        {merchant}
-                      </p>
-                      {t.is_transfer ? (
-                        <ArrowLeftRight
-                          className="size-3 shrink-0 text-muted-foreground/60"
-                          strokeWidth={1.6}
-                          aria-label="Transfer"
-                        />
-                      ) : null}
-                      {t.is_refund ? (
-                        <Undo2
-                          className="size-3 shrink-0 text-emerald-400/70"
-                          strokeWidth={1.6}
-                          aria-label="Refund"
-                        />
-                      ) : null}
-                      {t.split_type !== "none" ? (
-                        <Sparkles
-                          className="size-3 shrink-0 text-primary/70"
-                          strokeWidth={1.6}
-                          aria-label="Split"
-                        />
-                      ) : null}
-                    </div>
-                    {subtitle ? (
-                      <p className="truncate font-mono text-[11px] text-muted-foreground/65">
-                        {subtitle}
-                      </p>
-                    ) : null}
-                  </div>
-
-                  {/* Category — inline editable, with source tag */}
-                  <div className="flex min-w-0 items-center gap-2">
-                    {t.is_transfer ? (
-                      <CategoryPill category={category} size="md" />
-                    ) : (
-                      <CategoryPicker
-                        transactionId={t.id}
-                        current={category}
-                        options={categoryList}
-                      />
-                    )}
-                    <SourceTag source={t.category_source} />
-                  </div>
-
-                  {/* Account */}
-                  <div className="space-y-0.5 min-w-0">
-                    <p className="truncate text-[12px] text-muted-foreground">
-                      {account?.name ?? "—"}
-                    </p>
-                    <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground/55">
-                      {account?.mask
-                        ? `···${account.mask}`
-                        : prettyType(account?.type)}
-                    </p>
-                  </div>
-
-                  {/* Amount */}
-                  <div className="space-y-0.5 text-right">
-                    <p
-                      className={cn(
-                        "font-mono tabular-nums text-[14px]",
-                        isCredit ? "text-emerald-300/95" : "text-foreground/95",
-                      )}
-                    >
-                      {isCredit
-                        ? `+${formatCurrency(Math.abs(displayAmount))}`
-                        : formatCurrency(displayAmount)}
-                    </p>
-                    {t.split_type !== "none" &&
-                    t.effective_amount != null &&
-                    t.effective_amount !== t.amount ? (
-                      <p className="font-mono text-[10px] tabular-nums text-muted-foreground/55">
-                        of {formatCurrency(Math.abs(t.amount))}
-                      </p>
-                    ) : null}
-                  </div>
-
-                  {/* Per-row test WA — visible but faint, brightens on row hover */}
-                  <div className="flex items-center justify-end self-center opacity-30 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
-                    <TestWhatsAppButton transactionId={t.id} compact />
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+          <TransactionsList
+            initialRows={rows}
+            initialTotal={total}
+            pageSize={PAGE_SIZE}
+            accountList={accountList}
+            categoryList={categoryList}
+          />
         </section>
       )}
 
