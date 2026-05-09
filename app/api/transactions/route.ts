@@ -1,23 +1,21 @@
 import { type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
+import {
+  fetchAttachmentTxIds,
+  readTxFiltersFromSearchParams,
+} from "@/lib/transaction-filters";
 
 export const dynamic = "force-dynamic";
 
+const TX_SELECT =
+  "id, account_id, amount, effective_amount, date, merchant_name, name, is_pending, is_transfer, is_refund, user_category, category_source, excluded_from_stats, split_type";
+
 /**
- * Paginated transaction list — used by the /transactions page's infinite
- * scroll to load older rows in 100-row chunks.
+ * Paginated, filtered transaction list. Used by /transactions infinite-scroll
+ * to load older rows. Filters mirror the URL params written by <FilterBar/>.
  *
- * Auth-gated via Supabase SSR client; RLS scopes results to the caller.
- *
- * Params:
- *   ?offset=0  — number of rows to skip (defaults to 0)
- *   ?limit=100 — page size, capped at 200
- *
- * Pagination is offset-based (not cursor-based). For a single user with
- * realtime listener invalidation, offset drift is bounded — if a new row
- * arrives mid-scroll, the worst case is one row appearing twice or being
- * skipped on the next chunk. Cursor-based pagination (date+id) is the
- * upgrade path if this becomes annoying.
+ * Pagination is offset-based; for one user with realtime invalidation, drift
+ * between pages is bounded.
  */
 export async function GET(request: NextRequest) {
   const supabase = await createClient();
@@ -37,17 +35,47 @@ export async function GET(request: NextRequest) {
     200,
     Math.max(1, parseInt(url.searchParams.get("limit") ?? "100", 10) || 100),
   );
+  const filters = readTxFiltersFromSearchParams(url.searchParams);
 
-  const { data, error, count } = await supabase
+  // Pre-fetch attachment-bearing transaction_ids if the toggle is on.
+  let attachmentIds: string[] | null = null;
+  if (filters.withAttachment) {
+    attachmentIds = await fetchAttachmentTxIds(supabase);
+    if (attachmentIds.length === 0) {
+      return Response.json({ rows: [], total: 0 });
+    }
+  }
+
+  let query = supabase
     .from("transactions")
-    .select(
-      "id, account_id, amount, effective_amount, date, merchant_name, name, is_pending, is_transfer, is_refund, user_category, category_source, excluded_from_stats, split_type",
-      { count: "exact" },
-    )
-    .is("deleted_at", null)
+    .select(TX_SELECT, { count: "exact" })
+    .is("deleted_at", null);
+
+  if (filters.from) query = query.gte("date", filters.from);
+  if (filters.to) query = query.lte("date", filters.to);
+  if (filters.q) {
+    const escaped = filters.q.replace(/[%,]/g, "");
+    query = query.or(
+      `merchant_name.ilike.%${escaped}%,name.ilike.%${escaped}%`,
+    );
+  }
+  if (filters.categories.length > 0) {
+    query = query.in("user_category", filters.categories);
+  }
+  if (filters.accounts.length > 0) {
+    query = query.in("account_id", filters.accounts);
+  }
+  if (filters.pendingOnly) query = query.eq("is_pending", true);
+  if (filters.hideTransfers) query = query.eq("is_transfer", false);
+  if (filters.hideExcluded) query = query.eq("excluded_from_stats", false);
+  if (attachmentIds) query = query.in("id", attachmentIds);
+
+  query = query
     .order("date", { ascending: false })
     .order("created_at", { ascending: false })
     .range(offset, offset + limit - 1);
+
+  const { data, error, count } = await query;
 
   if (error) {
     return Response.json({ error: error.message }, { status: 500 });

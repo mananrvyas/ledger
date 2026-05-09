@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { ArrowLeftRight, Undo2, Sparkles } from "lucide-react";
 import { CategoryPill, type CategoryMeta } from "@/components/app/category-pill";
@@ -35,12 +36,15 @@ export type AccountInfo = {
 
 /**
  * Client-side row renderer for /transactions with infinite scroll. The page
- * server-renders the first chunk; we hold them as initial state and append
- * subsequent pages as the user scrolls (IntersectionObserver, 400px-rootMargin
- * sentinel below the list).
+ * server-renders the first chunk + filters; we append subsequent pages via
+ * GET /api/transactions, forwarding the same filter querystring so server
+ * pagination matches the visible filter set.
  *
  * Maps for `accountList` + `categoryList` are reconstructed inside the
  * component because Map instances aren't serializable across server→client.
+ *
+ * Re-mounted by parent via `key={filterSignature}` whenever filters change,
+ * so accumulated rows + scroll state reset cleanly.
  */
 export function TransactionsList({
   initialRows,
@@ -48,12 +52,16 @@ export function TransactionsList({
   pageSize,
   accountList,
   categoryList,
+  apiQueryString,
 }: {
   initialRows: TxRow[];
   initialTotal: number;
   pageSize: number;
   accountList: AccountInfo[];
   categoryList: CategoryMeta[];
+  /** Forwarded query string (date/category/account/q/...) so /api/transactions
+   *  paginates over the same set the page rendered. */
+  apiQueryString?: string;
 }) {
   const [rows, setRows] = useState<TxRow[]>(initialRows);
   const [total, setTotal] = useState<number>(initialTotal);
@@ -77,16 +85,16 @@ export function TransactionsList({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(
-        `/api/transactions?offset=${rows.length}&limit=${pageSize}`,
-      );
+      const base = new URLSearchParams(apiQueryString ?? "");
+      base.set("offset", String(rows.length));
+      base.set("limit", String(pageSize));
+      const res = await fetch(`/api/transactions?${base.toString()}`);
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error ?? `HTTP ${res.status}`);
       }
       const json = (await res.json()) as { rows: TxRow[]; total: number };
       setRows((prev) => {
-        // Dedupe by id in case realtime + page-fetch race produce overlap.
         const seen = new Set(prev.map((r) => r.id));
         const dedup = json.rows.filter((r) => !seen.has(r.id));
         return [...prev, ...dedup];
@@ -97,7 +105,7 @@ export function TransactionsList({
     } finally {
       setLoading(false);
     }
-  }, [loading, hasMore, rows.length, pageSize]);
+  }, [loading, hasMore, rows.length, pageSize, apiQueryString]);
 
   useEffect(() => {
     const node = sentinelRef.current;
@@ -148,17 +156,23 @@ export function TransactionsList({
               )}
             >
               {/* Date */}
-              <div className="space-y-0.5 font-mono text-[12px] tabular-nums text-muted-foreground">
+              <Link
+                href={`/transactions/${t.id}`}
+                className="space-y-0.5 font-mono text-[12px] tabular-nums text-muted-foreground"
+              >
                 <p className="text-foreground/85">{formatShortDate(t.date)}</p>
                 {t.is_pending ? (
                   <p className="text-[9px] uppercase tracking-[0.18em] text-amber-400/85">
                     pending
                   </p>
                 ) : null}
-              </div>
+              </Link>
 
               {/* Merchant */}
-              <div className="space-y-0.5 min-w-0">
+              <Link
+                href={`/transactions/${t.id}`}
+                className="space-y-0.5 min-w-0"
+              >
                 <div className="flex items-center gap-2">
                   <p className="truncate text-[14px] text-foreground">
                     {merchant}
@@ -190,7 +204,7 @@ export function TransactionsList({
                     {subtitle}
                   </p>
                 ) : null}
-              </div>
+              </Link>
 
               {/* Category */}
               <div className="flex min-w-0 items-center gap-2">
@@ -207,7 +221,10 @@ export function TransactionsList({
               </div>
 
               {/* Account */}
-              <div className="space-y-0.5 min-w-0">
+              <Link
+                href={`/transactions/${t.id}`}
+                className="space-y-0.5 min-w-0"
+              >
                 <p className="truncate text-[12px] text-muted-foreground">
                   {account?.name ?? "—"}
                 </p>
@@ -216,10 +233,13 @@ export function TransactionsList({
                     ? `···${account.mask}`
                     : prettyType(account?.type)}
                 </p>
-              </div>
+              </Link>
 
               {/* Amount */}
-              <div className="space-y-0.5 text-right">
+              <Link
+                href={`/transactions/${t.id}`}
+                className="space-y-0.5 text-right"
+              >
                 <p
                   className={cn(
                     "font-mono tabular-nums text-[14px]",
@@ -237,7 +257,7 @@ export function TransactionsList({
                     of {formatCurrency(Math.abs(t.amount))}
                   </p>
                 ) : null}
-              </div>
+              </Link>
 
               {/* Per-row test WA */}
               <div className="flex items-center justify-end self-center opacity-30 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
