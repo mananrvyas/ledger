@@ -143,7 +143,7 @@ export function TransactionsList({
             <li
               key={t.id}
               className={cn(
-                "group grid grid-cols-[80px_1fr_180px_140px_140px_28px] items-baseline gap-4 px-6 py-3 transition-colors hover:bg-foreground/[0.025]",
+                "group grid grid-cols-[96px_1fr_180px_140px_140px_28px] items-baseline gap-4 px-6 py-3 transition-colors hover:bg-foreground/[0.025]",
                 t.excluded_from_stats && "opacity-55",
               )}
             >

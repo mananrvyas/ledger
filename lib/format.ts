@@ -43,9 +43,19 @@ export function formatDate(d: string | Date | null | undefined): string {
   return dateFormatter.format(new Date(d));
 }
 
+/**
+ * Compact ledger date. Year is rendered ONLY when it differs from the
+ * current one — current-year transactions stay terse ("Apr 23"), older
+ * ones get an apostrophe-year ("Apr 23 '25"). Plaid backfills 24 months
+ * by default, so this matters anywhere we paginate past Jan 1.
+ */
 export function formatShortDate(d: string | Date | null | undefined): string {
   if (!d) return "—";
-  return shortDateFormatter.format(new Date(d));
+  const date = new Date(d);
+  const monthDay = shortDateFormatter.format(date);
+  const year = date.getFullYear();
+  if (year === new Date().getFullYear()) return monthDay;
+  return `${monthDay} '${String(year).slice(-2)}`;
 }
 
 /**

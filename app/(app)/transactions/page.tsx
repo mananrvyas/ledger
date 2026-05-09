@@ -90,7 +90,7 @@ export default async function TransactionsPage() {
         </section>
       ) : (
         <section className="reveal reveal-2 overflow-hidden rounded-xl border border-border bg-card">
-          <div className="grid grid-cols-[80px_1fr_180px_140px_140px_28px] items-center gap-4 border-b border-hairline px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70">
+          <div className="grid grid-cols-[96px_1fr_180px_140px_140px_28px] items-center gap-4 border-b border-hairline px-6 py-3 font-mono text-[10px] uppercase tracking-[0.18em] text-muted-foreground/70">
             <span>Date</span>
             <span>Merchant</span>
             <span>Category</span>

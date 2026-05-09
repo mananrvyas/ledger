@@ -343,7 +343,7 @@ export default async function DashboardPage() {
                 return (
                   <li
                     key={t.id}
-                    className="grid grid-cols-[80px_1fr_180px_140px] items-baseline gap-4 px-6 py-3 transition-colors hover:bg-foreground/[0.025]"
+                    className="grid grid-cols-[96px_1fr_180px_140px] items-baseline gap-4 px-6 py-3 transition-colors hover:bg-foreground/[0.025]"
                   >
                     <p className="font-mono text-[12px] tabular-nums text-foreground/85">
                       {formatShortDate(t.date)}
