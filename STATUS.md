@@ -26,10 +26,10 @@ Phase 5 dashboard fully operational underneath. Plaid Production live · multi-u
   - `(app)` layout with auth guard, header nav (Dashboard / Transactions / Accounts / Settings), sign-out
   - Empty dashboard placeholder card
   - `.env.local` populated for known secrets; placeholders for `SUPABASE_SERVICE_ROLE_KEY` and `USER_WHATSAPP_TO`
-  - Vercel project linked: `redacted-team/finance-planning`, GitHub auto-connected
+  - Vercel project linked: `[team]/finance-planning`, GitHub auto-connected
   - Production env vars uploaded to Vercel (16 vars, all 3 environments)
-  - First production deploy (per-build URL): `finance-planning-9fk8vrdvq-...vercel.app`. Stable production alias is <https://finance-planning-nu.vercel.app>
-  - GitHub repo: <https://github.com/mananrvyas/finance-planning> (private)
+  - First production deploy on Vercel. Stable production URL is <https://ledger.mananvyas.com>
+  - GitHub repo created.
   - **Sentry** wired (`@sentry/nextjs` SDK, server/edge/client configs, instrumentation, `/sentry-example-page` for capture testing). `sendDefaultPii: false` set everywhere to honor the no-financial-data-in-logs policy.
   - `SUPABASE_SERVICE_ROLE_KEY`, `SENTRY_DSN`, `SENTRY_AUTH_TOKEN` filled in `.env.local` and pushed to Vercel for prod/preview/dev.
 - 2026-05-03 — **Design system** (Quiet Ledger): warm-dark editorial. Fraunces (display) + Geist Sans + Geist Mono. Single amber accent. Atmospheric backdrop on auth, tabular-nums + ledger ruling on dashboard. Reusable Brand component.
@@ -41,7 +41,7 @@ Phase 5 dashboard fully operational underneath. Plaid Production live · multi-u
   - Worker: `handlers/sync_plaid_item.ts` — cursor-based `transactionsSync`, idempotent upsert/update/soft-delete, audit row in `app_events`.
   - Components: `components/plaid/plaid-link-button.tsx` (with reconnect mode).
   - Pages: `/accounts` (institutions + balances), `/transactions` (raw list with pending pill + credit highlight).
-  - Vercel `NEXT_PUBLIC_APP_URL` / `APP_URL` updated to canonical production URL `https://finance-planning-nu.vercel.app`.
+  - Vercel `NEXT_PUBLIC_APP_URL` / `APP_URL` updated to canonical production URL `https://ledger.mananvyas.com`.
 - 2026-05-03 — **Phase 2** (categorization):
   - Migrations 0004 (categorization columns + categories + category_rules tables, RLS, generated `effective_amount` STORED column) and 0005 (19 default categories seed) applied via Supabase MCP. TypeScript types regenerated.
   - `lib/plaid-category-map.ts` — Plaid PFC → our 19-category taxonomy with detail-level overrides.
@@ -65,7 +65,7 @@ Phase 5 dashboard fully operational underneath. Plaid Production live · multi-u
   - `sync_plaid_item` now reads previous transaction state on `modified`, computes `was_pending && now_posted && |Δamount| / baseline > 5%`, and enqueues `send_wa_notification` with `variant='re-notify'` when material.
   - QStash dispatcher routes `send_wa_notification`.
   - Twilio SDK installed.
-  - **Verified end-to-end** in production (`finance-planning-nu.vercel.app`): the test-WA button on `/transactions` enqueues a job, the worker formats + sends, the message lands on the user's phone within seconds. Local dev was 500ing because QStash refuses to publish to localhost; fixed by adding inline-dispatch in `lib/qstash.ts` when `APP_URL` resolves to loopback.
+  - **Verified end-to-end** in production (`ledger.mananvyas.com`): the test-WA button on `/transactions` enqueues a job, the worker formats + sends, the message lands on the user's phone within seconds. Local dev was 500ing because QStash refuses to publish to localhost; fixed by adding inline-dispatch in `lib/qstash.ts` when `APP_URL` resolves to loopback.
   - Admin endpoint `/api/admin/test-wa-notification` + `<TestWhatsAppButton />` — picks the user's most recent non-transfer transaction (or one passed by ID), clears `last_notified_at` so the worker doesn't skip, and enqueues with a unique idempotency key. One-shot test path that doesn't flood the inbox.
 - 2026-05-03 — **Phase 4** (WhatsApp inbound — code):
   - Migration 0007 (`transaction_attachments` table with FK to `transactions`, RLS owner-policy, `source` check constraint for `whatsapp|web_upload`; private `receipts` Storage bucket; storage policies keyed on first path segment = `auth.uid()`). Types regenerated.
@@ -185,7 +185,7 @@ Phase 5 dashboard fully operational underneath. Plaid Production live · multi-u
 - 2026-05-03 — **Next.js 16 deprecates `middleware.ts` → `proxy.ts`.** Renamed the file and the exported function (`middleware` → `proxy`). All Supabase-SSR session-refresh logic stayed identical.
 - 2026-05-03 — **Sentry: `sendDefaultPii: false`** everywhere. Wizard defaults this to true; we override to enforce the no-financial-data-in-logs policy (docs/01-architecture.md §Logging hygiene).
 - 2026-05-03 — **Plaid webhook signature verification deferred.** Plaid signs webhooks via JWT keyed against a JWKS endpoint. Implementing this end-to-end is non-trivial and the blast radius is currently bounded — the webhook only enqueues idempotent sync jobs against an existing `item_id`. Wire signature verification before we have any side-effect-bearing operations (Phase 3 onward).
-- 2026-05-03 — **Vercel canonical URL pinned**: `https://finance-planning-nu.vercel.app` (Vercel auto-assigned this short alias since `finance-planning.vercel.app` was taken). Cron-job.org and Plaid webhook config use this stable URL; QStash callback URLs fall back to `VERCEL_URL` when `NEXT_PUBLIC_APP_URL`/`APP_URL` aren't set. The long `*-redacted-team.vercel.app` form also works but is uglier; the per-deployment `*-{hash}-...` URLs change every push and must NOT be used in env vars or external configs.
+- 2026-05-03 — **Vercel canonical URL pinned**: `https://ledger.mananvyas.com` (Vercel auto-assigned this short alias since `finance-planning.vercel.app` was taken). Cron-job.org and Plaid webhook config use this stable URL; QStash callback URLs fall back to `VERCEL_URL` when `NEXT_PUBLIC_APP_URL`/`APP_URL` aren't set. The long `*-[team].vercel.app` form also works but is uglier; the per-deployment `*-{hash}-...` URLs change every push and must NOT be used in env vars or external configs.
 - 2026-05-03 — **Plaid env: temporarily on Sandbox.** All five OAuth institutions (Amex, Chase, Discover, Robinhood, PayPal) hit the "registration in review" gate on Production. Sandbox lets us exercise the full pipeline (encryption, webhooks, sync, UI) against synthetic First Platypus Bank / Houndstooth Bank data while we wait. Test creds: `user_good` / `pass_good`, MFA `1234`. Flip back to `PLAID_ENV=production` + production secret once OAuth registrations clear at https://dashboard.plaid.com/activity/status/oauth-institutions.
 - 2026-05-03 — **Twilio inbound signature verification: ON.** The `/api/whatsapp/webhook` route validates `X-Twilio-Signature` (HMAC-SHA1 of full URL + sorted form params) via `twilio.validateRequest` before any DB write or job enqueue. Unlike Plaid (still deferred), this one is non-negotiable because the webhook causes side effects on real transactions (DB writes, outbound WA confirmations).
 - 2026-05-03 — **WA reply matching window: 60 min, single-candidate only.** `parse_wa_reply` will silently apply an intent to a transaction *only* if exactly one tx is `last_notified_at >= now() - 60min AND last_user_edit_at IS NULL`. Two or more candidates → ask. Zero candidates → ask. This trades some friction (after a flurry of 5 notifications, replies need to be quoted) for never silently editing the wrong row.
@@ -254,7 +254,7 @@ Phase 5 dashboard fully operational underneath. Plaid Production live · multi-u
 ## Notes
 
 - Vercel project ID: `prj_*` — see `.vercel/project.json` (gitignored).
-- Vercel team: `redacted-team` (slug: `redacted-team`).
-- Supabase project ID: `redacted-project-ref` (region: `us-west-2`, Postgres 17).
+- Vercel team / project IDs: in the gitignored `.vercel/project.json`.
+- Supabase project: region `us-west-2`, Postgres 17. Project ref lives in the gitignored `.env.local`.
 - Vercel automatically connected the GitHub repo, so future pushes to `main` deploy to production preview and `vercel --prod` promotes.
 - Deployment Protection (Vercel SSO) is on by default for the deploy URL — opening the URL in an incognito browser will hit Vercel's auth wall. Disable in project settings if you want public access (Supabase auth still gates everything).
