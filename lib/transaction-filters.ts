@@ -85,6 +85,28 @@ export async function fetchAttachmentTxIds(
   );
 }
 
+/**
+ * IDs of the user's non-archived accounts. The transaction list surfaces
+ * (`/transactions` page + `/api/transactions`) constrain to these so that
+ * rows belonging to a disconnected/archived account (e.g. an old item left
+ * behind after a re-link) don't surface as ghost duplicates. RLS already
+ * scopes to the user; this just drops archived accounts.
+ *
+ * Returns a sentinel non-matching UUID when the user has no active accounts,
+ * so the caller's `.in("account_id", ids)` cleanly yields zero rows rather
+ * than an empty-array filter that some clients treat as a no-op.
+ */
+export async function fetchActiveAccountIds(
+  supabase: SupabaseClient<Database>,
+): Promise<string[]> {
+  const { data } = await supabase
+    .from("accounts")
+    .select("id")
+    .eq("is_archived", false);
+  const ids = (data ?? []).map((r) => r.id);
+  return ids.length > 0 ? ids : ["00000000-0000-0000-0000-000000000000"];
+}
+
 function csv(v: string | null): string[] {
   if (!v) return [];
   return v

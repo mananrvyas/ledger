@@ -11,6 +11,7 @@ import {
 } from "@/components/app/transactions/transactions-list";
 import { FilterBar } from "@/components/app/transactions/filter-bar";
 import {
+  fetchActiveAccountIds,
   fetchAttachmentTxIds,
   filterSignature,
   readTxFiltersFromSearchParams,
@@ -41,10 +42,15 @@ export default async function TransactionsPage({
     attachmentIds = ids.length > 0 ? ids : ["00000000-0000-0000-0000-000000000000"];
   }
 
+  // Constrain to active accounts so rows from an archived/disconnected item
+  // (e.g. an old connection left behind after a re-link) don't reappear.
+  const activeAccountIds = await fetchActiveAccountIds(supabase);
+
   let txQuery = supabase
     .from("transactions")
     .select(TX_SELECT, { count: "exact" })
-    .is("deleted_at", null);
+    .is("deleted_at", null)
+    .in("account_id", activeAccountIds);
 
   if (filters.from) txQuery = txQuery.gte("date", filters.from);
   if (filters.to) txQuery = txQuery.lte("date", filters.to);

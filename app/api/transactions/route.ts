@@ -1,6 +1,7 @@
 import { type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import {
+  fetchActiveAccountIds,
   fetchAttachmentTxIds,
   readTxFiltersFromSearchParams,
 } from "@/lib/transaction-filters";
@@ -46,10 +47,15 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // Constrain to active accounts so rows from an archived/disconnected item
+  // (e.g. an old connection left behind after a re-link) don't reappear.
+  const activeAccountIds = await fetchActiveAccountIds(supabase);
+
   let query = supabase
     .from("transactions")
     .select(TX_SELECT, { count: "exact" })
-    .is("deleted_at", null);
+    .is("deleted_at", null)
+    .in("account_id", activeAccountIds);
 
   if (filters.from) query = query.gte("date", filters.from);
   if (filters.to) query = query.lte("date", filters.to);

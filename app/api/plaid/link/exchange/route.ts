@@ -2,7 +2,7 @@ import { type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import type { Json } from "@/lib/database.types";
-import { storePlaidItem } from "@/lib/encryption";
+import { getDecryptedAccessToken, storePlaidItem } from "@/lib/encryption";
 import { getPlaidClient } from "@/lib/plaid";
 import { publishJob } from "@/lib/qstash";
 
@@ -99,6 +99,54 @@ export async function POST(request: NextRequest) {
             : `accounts insert failed: ${accErr.message}`;
         return Response.json({ error: friendly }, { status: 500 });
       }
+    }
+
+    // 3b) Replace any prior ACTIVE item for this same institution. Re-linking a
+    //     bank through the normal "add bank" flow (rather than the Reconnect
+    //     button) would otherwise leave the old item active alongside the new
+    //     one — both keep syncing the same accounts and every transaction shows
+    //     up twice. Archive the predecessors: best-effort Plaid itemRemove,
+    //     mark disconnected, archive their accounts (history preserved but the
+    //     transaction list hides archived-account rows).
+    const institutionId = stored.institution_id ?? "";
+    let priorQuery = admin
+      .from("plaid_items")
+      .select("id")
+      .eq("user_id", user.id)
+      .eq("status", "active")
+      .neq("id", stored.id);
+    priorQuery = institutionId
+      ? priorQuery.eq("institution_id", institutionId)
+      : priorQuery.eq(
+          "institution_name",
+          stored.institution_name ?? "",
+        );
+    const { data: priorItems } = await priorQuery;
+
+    for (const prior of priorItems ?? []) {
+      try {
+        const oldToken = await getDecryptedAccessToken(prior.id);
+        await plaid.itemRemove({ access_token: oldToken });
+      } catch {
+        // Token may be expired/invalid; keep going with the local archive.
+      }
+      await admin
+        .from("plaid_items")
+        .update({ status: "disconnected", error_code: null, error_message: null })
+        .eq("id", prior.id);
+      await admin
+        .from("accounts")
+        .update({ is_archived: true })
+        .eq("plaid_item_id", prior.id);
+      await admin.from("app_events").insert({
+        user_id: user.id,
+        event_type: "plaid_item_replaced_on_relink",
+        payload: {
+          old_item_uuid: prior.id,
+          new_item_uuid: stored.id,
+          institution_name: stored.institution_name,
+        },
+      });
     }
 
     // 4) Enqueue the initial historical sync. Idempotency key is the item id —
