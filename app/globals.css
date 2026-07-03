@@ -61,8 +61,66 @@
   --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-/* Single dark theme — no light variant. */
+/* Light theme = default tokens (`:root`); dark theme in `.dark` below.
+ * next-themes toggles the `.dark` class on <html> and persists the choice to
+ * localStorage. App default is dark (see ThemeProvider). Warm paper light
+ * variant keeps the single-amber editorial identity. */
 :root {
+  color-scheme: light;
+
+  --background: oklch(0.985 0.004 85);       /* warm paper */
+  --foreground: oklch(0.24 0.01 60);         /* warm near-black */
+
+  --card: oklch(0.998 0.002 85);
+  --card-foreground: oklch(0.24 0.01 60);
+
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.24 0.01 60);
+
+  --primary: oklch(0.62 0.14 58);            /* deeper amber for contrast on paper */
+  --primary-foreground: oklch(0.99 0.003 85);
+
+  --secondary: oklch(0.93 0.005 80);
+  --secondary-foreground: oklch(0.26 0.01 60);
+
+  --muted: oklch(0.945 0.004 80);
+  --muted-foreground: oklch(0.48 0.008 70);
+
+  --accent: oklch(0.62 0.14 58);
+  --accent-foreground: oklch(0.99 0.003 85);
+
+  --destructive: oklch(0.55 0.19 25);
+  --success: oklch(0.55 0.12 148);
+
+  --border: oklch(0.2 0.01 70 / 12%);
+  --hairline: oklch(0.2 0.01 70 / 9%);
+  --input: oklch(0.2 0.01 70 / 15%);
+  --ring: oklch(0.62 0.14 58 / 45%);
+
+  --chart-1: oklch(0.62 0.14 58);            /* amber */
+  --chart-2: oklch(0.55 0.12 148);           /* sage */
+  --chart-3: oklch(0.52 0.13 235);           /* blue */
+  --chart-4: oklch(0.55 0.16 320);           /* mauve */
+  --chart-5: oklch(0.58 0.17 25);            /* rust */
+
+  --radius: 0.5rem;
+
+  --scrollbar: oklch(0.2 0.01 70 / 16%);
+  --scrollbar-hover: oklch(0.2 0.01 70 / 28%);
+
+  --sidebar: oklch(0.975 0.004 85);
+  --sidebar-foreground: oklch(0.24 0.01 60);
+  --sidebar-primary: oklch(0.62 0.14 58);
+  --sidebar-primary-foreground: oklch(0.99 0.003 85);
+  --sidebar-accent: oklch(0.93 0.005 80);
+  --sidebar-accent-foreground: oklch(0.26 0.01 60);
+  --sidebar-border: oklch(0.2 0.01 70 / 12%);
+  --sidebar-ring: oklch(0.62 0.14 58 / 45%);
+}
+
+.dark {
+  color-scheme: dark;
+
   --background: oklch(0.135 0.005 85);
   --foreground: oklch(0.96 0.004 85);
 
@@ -98,7 +156,8 @@
   --chart-4: oklch(0.7 0.16 320);           /* mauve */
   --chart-5: oklch(0.72 0.16 25);           /* rust */
 
-  --radius: 0.5rem;
+  --scrollbar: oklch(1 0.005 85 / 8%);
+  --scrollbar-hover: oklch(1 0.005 85 / 16%);
 
   --sidebar: oklch(0.155 0.005 85);
   --sidebar-foreground: oklch(0.96 0.004 85);
@@ -118,7 +177,6 @@
   html {
     @apply font-sans;
     font-feature-settings: "ss01", "cv11";
-    color-scheme: dark;
   }
 
   body {
@@ -168,13 +226,13 @@
     background: transparent;
   }
   *::-webkit-scrollbar-thumb {
-    background: oklch(1 0.005 85 / 8%);
+    background: var(--scrollbar);
     border-radius: 999px;
     border: 2px solid transparent;
     background-clip: padding-box;
   }
   *::-webkit-scrollbar-thumb:hover {
-    background: oklch(1 0.005 85 / 16%);
+    background: var(--scrollbar-hover);
     background-clip: padding-box;
   }
 }

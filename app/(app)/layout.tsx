@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { Brand } from "@/components/brand";
 import { MainNav } from "@/components/app/main-nav";
+import { ThemeToggle } from "@/components/app/theme-toggle";
 import { RealtimeListener } from "@/components/app/realtime-listener";
 import { Button } from "@/components/ui/button";
 import { signOut } from "./actions";
@@ -44,6 +45,7 @@ export default async function AppLayout({
             >
               {user.email}
             </span>
+            <ThemeToggle />
             <form action={signOut}>
               <Button
                 type="submit"
