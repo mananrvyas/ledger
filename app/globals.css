@@ -108,6 +108,10 @@
   --scrollbar: oklch(0.2 0.01 70 / 16%);
   --scrollbar-hover: oklch(0.2 0.01 70 / 28%);
 
+  /* Selection: soft amber wash, keep the warm near-black text readable */
+  --selection-bg: oklch(0.62 0.14 58 / 0.22);
+  --selection-fg: oklch(0.2 0.01 60);
+
   --sidebar: oklch(0.975 0.004 85);
   --sidebar-foreground: oklch(0.24 0.01 60);
   --sidebar-primary: oklch(0.62 0.14 58);
@@ -158,6 +162,10 @@
 
   --scrollbar: oklch(1 0.005 85 / 8%);
   --scrollbar-hover: oklch(1 0.005 85 / 16%);
+
+  /* Selection: amber glow with near-white text */
+  --selection-bg: oklch(0.79 0.135 72 / 0.35);
+  --selection-fg: oklch(0.99 0 0);
 
   --sidebar: oklch(0.155 0.005 85);
   --sidebar-foreground: oklch(0.96 0.004 85);
@@ -213,8 +221,8 @@
   }
 
   ::selection {
-    background: oklch(0.79 0.135 72 / 0.35);
-    color: oklch(0.99 0 0);
+    background: var(--selection-bg);
+    color: var(--selection-fg);
   }
 
   /* Subtle scrollbar — never default chrome */
@@ -267,6 +275,10 @@
   .reveal-2 { animation-delay: 140ms; }
   .reveal-3 { animation-delay: 220ms; }
   .reveal-4 { animation-delay: 300ms; }
+  .reveal-5 { animation-delay: 420ms; }
+  .reveal-6 { animation-delay: 560ms; }
+  .reveal-7 { animation-delay: 720ms; }
+  .reveal-8 { animation-delay: 900ms; }
 
   @keyframes reveal {
     to {
@@ -275,11 +287,40 @@
     }
   }
 
+  /* Marketing page: infinite ledger ticker. Track holds two copies of the
+   * row; translating -50% loops seamlessly. */
+  .ticker-track {
+    display: flex;
+    width: max-content;
+    animation: ticker 48s linear infinite;
+  }
+  .ticker-track:hover {
+    animation-play-state: paused;
+  }
+  @keyframes ticker {
+    to {
+      transform: translateX(-50%);
+    }
+  }
+
+  /* Marketing page: barely-there drift on the phone mockup. */
+  .float-slow {
+    animation: float-slow 7s ease-in-out infinite;
+  }
+  @keyframes float-slow {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-8px); }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .reveal {
       animation: none;
       opacity: 1;
       transform: none;
+    }
+    .ticker-track,
+    .float-slow {
+      animation: none;
     }
   }
 }

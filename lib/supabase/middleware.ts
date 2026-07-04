@@ -31,7 +31,16 @@ export async function updateSession(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
   const isAuthRoute = pathname === "/login" || pathname === "/signup";
-  const isPublicRoute = isAuthRoute || pathname.startsWith("/api/");
+  const isPublicRoute =
+    isAuthRoute || pathname === "/home" || pathname.startsWith("/api/");
+
+  // Anonymous visitors at the root see the marketing page (URL stays "/").
+  // Signed-in users fall through and get the dashboard.
+  if (!user && pathname === "/") {
+    const url = request.nextUrl.clone();
+    url.pathname = "/home";
+    return NextResponse.rewrite(url, { request });
+  }
 
   if (!user && !isPublicRoute) {
     const url = request.nextUrl.clone();
