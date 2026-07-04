@@ -360,12 +360,9 @@ function HowItWorks() {
 
       <div className="mt-16 grid gap-px overflow-hidden rounded-xl border border-hairline bg-hairline md:grid-cols-3">
         {STEPS.map((step) => (
-          <article
-            key={step.n}
-            className="group bg-background p-8 transition-colors hover:bg-card/70"
-          >
+          <article key={step.n} className="bg-background p-8">
             <div className="flex items-baseline justify-between">
-              <span className="font-display text-5xl italic text-primary/30 transition-colors group-hover:text-primary/60">
+              <span className="font-display text-5xl italic text-primary/30">
                 {step.n}
               </span>
               <step.icon
